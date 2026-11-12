@@ -3,10 +3,10 @@
 **The solution for Teams meeting links in a company whose IT policy does not permit the Graph API —
 and where win32com cannot insert a link either.**
 
-Both paths are closed, for different reasons. The Graph API is not allowed, and it is the parameter
-`isOnlineMeeting` that asks the service to mint a join link. win32com fails for a technical reason of
-its own: `IsOnlineMeeting` stays False and `OnlineMeeting` is unavailable, so the desktop path can
-create a meeting but never a Teams link.
+Both paths are closed, for different reasons. The Graph API is banned by company IT policy, and it is
+the parameter `isOnlineMeeting` that asks the service to mint a join link. win32com fails for a technical
+reason of its own: `IsOnlineMeeting` stays False and `OnlineMeeting` is unavailable, so the desktop
+path can create a meeting but never a Teams link.
 
 What is left is the web UI, which is what this drives: the Outlook calendar in Chromium with the
 user's own SSO session. It fills the composer, switches on `Microsoft Teams meeting`, and sends. The
