@@ -13,25 +13,27 @@ join link is minted by the service at creation — nothing pasted in, nothing in
 
 ## Who does what
 
-**The agent runs everything except one thing: the passkey tap that starts a session.**
+**The agent runs everything except the sign-in, and the sign-in is needed only when the stored
+session has expired.**
 
-1. The agent opens a window on the sign-in page. **You** approve it with your passkey — PIN,
-   fingerprint or face. Every new browser session asks for it, even though a persistent auth cookie
-   exists (measured 2026-11-12). The agent never sees the credential.
-2. In that one session the agent does the work: title, attendees, date, times, body, the Teams
-   switch, and the send.
-3. The next session needs another tap. The browser therefore stays open for the whole piece of work
-   instead of being relaunched per command.
+1. While the session is valid, nothing is asked: a freshly launched browser goes straight to the
+   calendar (measured 2026-11-12: `landed_without_help: true`).
+2. When it has expired, the agent opens a window on the sign-in page and **you** approve it with
+   your passkey — PIN, fingerprint or face. The agent never sees the credential. Then the agent
+   does the work: title, attendees, date, times, body, the Teams switch, and the send.
+3. **A window opens for each run**, because headless cannot complete the corporate sign-in: a
+   headless launch with a valid stored session still lands on the login page and exits 3
+   (measured). That is why `serve` exists — one session, many commands, one boot.
 
-**What that means in practice:** this is attended. It is not a scheduled job and not a background
-service — plan invitations for a time when you are at the machine.
+**What that means in practice:** be reachable for the occasional sign-in, and expect a Chromium
+window on each run. It is not a scheduled job.
 
 ## What it does
 
 | Command | Purpose |
 |---|---|
 | `meeting-create` | fill the composer and send the invitation (title, attendees, date, times, body, Teams link on/off) |
-| `serve` | keep one session open and take JSON commands on stdin — the normal way to use it |
+| `serve` | keep one session open and take JSON commands on stdin — for a batch, to boot once |
 | `calibrate` | re-discover the composer controls after a Microsoft UI change |
 
 `meeting-create --dry-run` fills everything and discards it without sending: use it to check a new

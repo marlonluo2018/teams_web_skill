@@ -16,16 +16,17 @@ operations: ["serve", "calibrate"]
 
 **The Graph API is not permitted** where this runs. **win32com cannot insert a Teams link either** — on this account `IsOnlineMeeting` stays False and `OnlineMeeting` is unavailable, so the desktop path can create a meeting but never a link. What remains is the web UI: tick `Microsoft Teams meeting` in the composer and the service generates the link. This drives that UI in a real browser with the user own session — no Graph token, no app registration, no admin consent. Same shape as `slack_web_skill`, applied to Microsoft 365.
 
-## Why a *resident* session, and not a browser per command
+## Sessions: one launch per run is fine, headless is not
 
-Measured 2026-11-12: **every new browser session must pass a FIDO2 passkey at the corporate identity provider.** A persisted `ESTSAUTHPERSISTENT` cookie exists (89 days) but does not skip it — a fresh launch lands on "Pick an account" and then on a passkey prompt.
+Measured 2026-11-12, in this order:
 
-Consequences, both of which shape everything below:
+- **A headed launch with a valid stored session goes straight in** — `landed_without_help: true`, no prompt. The one-browser-per-command shape works; the earlier belief that every launch demanded a passkey was wrong, and came from reading a headless failure as an auth rule.
+- **A headless launch does not**, even with that same valid session: it stops at `login.microsoftonline.com` and exits 3. Headless cannot complete the corporate sign-in, so every run opens a window.
+- **When the stored session has expired**, the headed run lands on the sign-in page and waits for the human: passkey, PIN, fingerprint or face. Only then is the agent blocked on a person.
 
-- **The browser stays open** for the whole working session; commands arrive as JSON lines. A one-browser-per-command design (what the Slack skill does) cannot work here.
-- **The passkey is the human step.** The agent never types credentials, and cannot: the prompt wants a PIN, fingerprint or face.
+`serve` is therefore an optimisation, not a requirement: one session, many commands, one boot (~15 s each otherwise). Use it for a batch; a single `meeting-create` one-shot is fine.
 
-Headless is allowed *inside* an already-authenticated resident session, but it cannot start one — measured again 2026-11-12: `serve --headless` against a stored profile stopped at `login.microsoftonline.com` and exited 3 after the full timeout. Headed runs still need the passkey tap each session: the SSO redirect reaches the corporate IdP entry and waits there for the human. List that host under `idp_hosts` so the driver recognises it as a sign-in page.
+If a sign-in page ever hangs, the corporate IdP host is the thing to list under `idp_hosts` so the driver recognises it as a sign-in page instead of an app screen.
 
 ## Commands
 
