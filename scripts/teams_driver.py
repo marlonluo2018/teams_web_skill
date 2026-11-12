@@ -1392,7 +1392,8 @@ def serve(page) -> int:
 
 USAGE = """teams_web_skill - resident M365 web automation
 
-  py -3 scripts/teams_driver.py serve [--headless]     open the window, then JSON lines on stdin
+  py -3 scripts/teams_driver.py status [--offscreen]   is the stored session usable? (exit 3 = needs a sign-in)
+  py -3 scripts/teams_driver.py serve [--offscreen]     open the window, then JSON lines on stdin
   py -3 scripts/teams_driver.py calibrate [--headless]  open the calendar + composer, dump controls
   py -3 scripts/teams_driver.py meeting-create --subject S
         --start "2026-11-13 14:00" --end "2026-11-13 15:00" --attendee a@b.c
@@ -1433,8 +1434,8 @@ def main() -> int:
     if command in ("-h", "--help", "help"):
         print(USAGE)
         return 0
-    if command not in ("serve", "calibrate", "meeting-create", "meeting-probe-slot", "grid-probe", "date-probe", "time-probe", "save-probe", "slot-create", "tz-probe", "tz-set-probe"):
-        sys.exit(f"unknown command {command!r}; use serve, calibrate or meeting-create")
+    if command not in ("serve", "status", "calibrate", "meeting-create", "meeting-probe-slot", "grid-probe", "date-probe", "time-probe", "save-probe", "slot-create", "tz-probe", "tz-set-probe"):
+        sys.exit(f"unknown command {command!r}; use status, serve, calibrate or meeting-create")
     headless = "--headless" in sys.argv[2:]
     flag_offscreen = "--offscreen" in sys.argv[2:]
     setting_offscreen = str(setting("TEAMS_SKILL_OFFSCREEN", "offscreen", "") or "").strip().lower()
@@ -1452,7 +1453,7 @@ def main() -> int:
             # visible window instead of sitting out the timeout on a page no one can reach.
             if not ready and offscreen:
                 print(
-                    "offscreen: app did not load (session likely expired) - reopening visibly",
+                    "the stored session has expired: a sign-in window is opening - sign in there",
                     file=sys.stderr,
                 )
                 ctx.close()
@@ -1466,6 +1467,11 @@ def main() -> int:
                       "hint": "the stored session has expired: sign in in the window that opened",
                       **state_report()})
                 return 3
+            if command == "status":
+                rendered, detail = app_state(page)
+                emit({"action": "status", "signed_in": rendered, "detail": detail,
+                      "url": (page.url or "")[:90], **state_report()})
+                return 0
             if command == "calibrate":
                 emit({"action": "calibrate", **calibrate(page)})
                 return 0
@@ -1499,6 +1505,14 @@ def main() -> int:
                       **meeting_create(page, _meeting_args(sys.argv[2:]))})
                 return 0
             return serve(page)
+        except Exception as exc:
+            name = type(exc).__name__
+            if name in ("TargetClosedError", "Error") and "closed" in str(exc).lower():
+                emit({"action": command, "ok": False, "closed": True,
+                      "error": "the browser window was closed before the app loaded - sign in, then retry",
+                      **state_report()})
+                return 1
+            raise
         finally:
             ctx.close()
 
