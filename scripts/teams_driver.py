@@ -440,6 +440,11 @@ def meeting_create(page, args: dict) -> dict:
     page.wait_for_timeout(800)
 
     body = (args.get("body") or "").strip()
+    if args.get("body_file"):
+        try:
+            body = Path(str(args["body_file"])).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            return {"ok": False, "error": f"body file: {exc}"}
     if body:
         try:
             editor = page.get_by_role("textbox", name="Event body")
@@ -592,8 +597,16 @@ def meeting_create(page, args: dict) -> dict:
         problems.append(f"date not applied: {readback.get('time')!r} (wanted {start})")
     if readback["subject"] != subject:
         problems.append(f"subject read back as {readback['subject']!r}")
-    if body and body[:20] not in readback["body_head"]:
-        problems.append("body did not stick in the editor")
+    # Compare with whitespace collapsed on both sides: the body carries newlines
+    # and the page read-back collapses them, so a raw slice never matches and the
+    # guard fired on a body that was plainly there (measured 2026-11-12, which
+    # cost one refused send).
+    if body:
+        flat_body = " ".join(body.split())
+        flat_seen = " ".join(readback["body_head"].split())
+        probe = flat_body[:40]
+        if probe and probe not in flat_seen:
+            problems.append("body did not stick in the editor")
     if args.get("teams", True) and readback["teams_on"] is not True:
         problems.append("Teams switch is not on")
     if problems:
@@ -606,15 +619,64 @@ def meeting_create(page, args: dict) -> dict:
         return {"ok": False, "error": "no Save/Send button", "readback": readback}
     label = " ".join((save.first.inner_text() or "").split())
     save.first.click()
-    page.wait_for_timeout(9000)
 
+    # Sending a meeting with a Teams link is not instant: Outlook shows a modal
+    # "Please wait... We are creating a Teams meeting" while the server mints the
+    # join link, and the invitation leaves when that finishes. Waiting a fixed 9 s
+    # and checking the composer was wrong twice over - too short, and it ignored
+    # the dialog. Poll instead, for up to 90 s.
+    title_input = page.locator("input[placeholder=\"Add title\"]")
+    deadline = time.time() + 120
+    dismissed = 0
+    first_seen = None
+    while time.time() < deadline:
+        if title_input.count() == 0:
+            break
+
+        # The "creating a Teams meeting" modal does not close itself: it carries an
+        # Ok that somebody has to press. The previous loop saw its text and simply
+        # continued, so it waited the full window and never acknowledged the dialog
+        # (measured twice, 2026-11-12). Give the creation a grace period, then press
+        # Ok, then keep waiting for the composer to actually close.
+        dialog = page.get_by_text("creating a Teams meeting", exact=False)
+        present = False
+        try:
+            present = dialog.count() > 0
+        except Exception:
+            present = False
+        if present:
+            if first_seen is None:
+                first_seen = time.time()
+            elif time.time() - first_seen > 15 and dismissed < 3:
+                try:
+                    ok = page.get_by_role("button", name=re.compile("^ok$", re.I))
+                    if ok.count() > 0:
+                        ok.first.click()
+                        dismissed += 1
+                        first_seen = None
+                        page.wait_for_timeout(4000)
+                        continue
+                except Exception:
+                    pass
+        page.wait_for_timeout(3000)
+
+    # Sending is irreversible, so prove the composer actually closed rather than
+    # reporting the click. A composer still on screen means the invitation did
+    # not leave, and a blind retry would send a second copy.
+    composer_gone = page.locator("input[placeholder=\"Add title\"]").count() == 0
     after = ""
     try:
         after = " ".join(page.inner_text("body").split())[:200]
     except Exception:
         pass
-    return {"ok": True, "sent": True, "clicked": label, "readback": readback,
-            "screenshot": str(shot), "page_head": after}
+    shot_after = skill_home() / "meeting-sent.png"
+    try:
+        page.screenshot(path=str(shot_after))
+    except Exception:
+        pass
+    return {"ok": composer_gone, "sent": composer_gone, "clicked": label,
+            "composer_closed": composer_gone, "readback": readback,
+            "screenshot": str(shot_after), "page_head": after}
 
 def meeting_create_via_slot(page, args: dict) -> dict:
     """Open the composer from the calendar grid instead of editing its date field.
@@ -923,7 +985,7 @@ def _meeting_args(argv: list[str]) -> dict:
     while i < len(argv):
         flag = argv[i]
         takes_value = flag in ("--subject", "--start", "--end", "--attendee", "--body",
-                              "--target-date")
+                              "--body-file", "--target-date")
         if takes_value and i + 1 < len(argv):
             value = argv[i + 1]
             if flag == "--attendee":
