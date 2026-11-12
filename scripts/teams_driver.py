@@ -321,6 +321,58 @@ def calibrate(page) -> dict:
         except Exception as exc:
             report["time_panel"] = type(exc).__name__
 
+        # --- date field probe: how is this control actually driven? ---
+        probe: dict = {}
+        try:
+            field = page.get_by_role("combobox", name="Start date")
+            if field.count() == 0:
+                probe["found"] = False
+            else:
+                el = field.first
+                probe["found"] = True
+                probe["tag"] = el.evaluate("e => e.tagName.toLowerCase()")
+                for attr in ("type", "readonly", "disabled", "aria-haspopup", "role"):
+                    try:
+                        probe[attr] = el.get_attribute(attr)
+                    except Exception:
+                        pass
+                probe["value_before"] = el.evaluate("e => e.value")
+                el.click()
+                page.wait_for_timeout(1000)
+                page.keyboard.type("11/20/2026", delay=40)
+                page.wait_for_timeout(1000)
+                probe["value_after_type"] = el.evaluate("e => e.value")
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(800)
+                probe["value_after_enter"] = el.evaluate("e => e.value")
+                try:
+                    probe["header_after"] = " ".join(page.get_by_role(
+                        "button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
+                except Exception:
+                    pass
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(800)
+        except Exception as exc:
+            probe["error"] = f"{type(exc).__name__}: {str(exc)[:80]}"
+
+        # anything on the page that carries a date in its label is a candidate handle
+        try:
+            dated = page.locator("[aria-label*='2026'], [title*='2026']")
+            samples = []
+            for i in range(min(dated.count(), 25)):
+                node = dated.nth(i)
+                try:
+                    label = (node.get_attribute("aria-label") or node.get_attribute("title") or "")
+                    role = (node.get_attribute("role") or node.evaluate("e => e.tagName.toLowerCase()"))
+                except Exception:
+                    continue
+                label = " ".join(label.split())[:55]
+                if label:
+                    samples.append(f"{role}: {label}")
+            probe["dated_elements"] = samples[:12]
+        except Exception as exc:
+            probe["dated_probe_error"] = type(exc).__name__
+        report["date_probe"] = probe
         shot = skill_home() / "calibrate-composer.png"
         try:
             page.screenshot(path=str(shot))
@@ -373,6 +425,17 @@ def meeting_create(page, args: dict) -> dict:
     if not subject or not start or not end:
         return {"ok": False, "error": "subject, start and end are required"}
 
+    # The composer date control is not driven yet (see SKILL.md: typing, fill()
+    # and both grid routes failed), so a meeting can only be created for the day
+    # the composer defaults to. Refusing is the point: silently creating it on
+    # today when a future date was asked for would put a wrong time in front of
+    # other people, which is worse than an error message.
+    today = time.strftime("%Y-%m-%d")
+    if start.split()[0] != today:
+        return {"ok": False, "refused": True,
+                "error": ("only today (" + today + ") can be scheduled: the composer date "
+                          "control is unresolved. See SKILL.md 'Known limitation'.")}
+
     page.goto(calendar_url(), wait_until="domcontentloaded")
     if not wait_for_app(page, ready_timeout()):
         return {"ok": False, "error": "calendar did not render"}
@@ -411,13 +474,73 @@ def meeting_create(page, args: dict) -> dict:
         except Exception as exc:
             return {"ok": False, "error": f"attendee {address}: {type(exc).__name__}"}
 
-    # times: open the picker and set the three comboboxes
+    # Times first: they took effect in the first dry run, dates did not. The date
+    # field did not accept an ISO value, so try the plausible formats in turn and
+    # keep whichever one reads back correctly - discovery inside the same run
+    # instead of one passkey tap per guess.
     clock = page.get_by_role("button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}"))
     if clock.count() > 0:
         clock.first.click()
         page.wait_for_timeout(2500)
-    for label, value in (("Start date", start.split()[0] if " " in start else start),
-                         ("Start time", start.split()[-1]),
+
+    # The date field is read-only: four typed formats changed nothing (measured
+    # 2026-11-12, date_format_used came back null), so it is a calendar grid and
+    # the day has to be clicked. Walk the month if needed, then click the cell.
+    date_target = start.split()[0]
+    date_used = None
+    date_samples = []
+    try:
+        y, m, d = date_target.split("-")
+        month_names = ["January", "February", "March", "April", "May", "June", "July",
+                       "August", "September", "October", "November", "December"]
+        month_name = month_names[int(m) - 1]
+        field = page.get_by_role("combobox", name="Start date")
+        if field.count() > 0:
+            # fill() sets the value through the input event, which works on some
+            # comboboxes where type() did nothing; then fall back to the grid.
+            try:
+                field.first.fill(wanted_fill := f"{m}/{d}/{y}")
+                page.wait_for_timeout(1200)
+                shown = " ".join(page.get_by_role(
+                    "button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
+                if date_target in shown:
+                    date_used = "fill:" + wanted_fill
+            except Exception:
+                pass
+        if date_used is None and field.count() > 0:
+            field.first.click()
+            page.wait_for_timeout(2000)
+            wanted = f"{m}/{d}/{y}"
+            for _ in range(24):
+                # Ask for the one cell by name instead of enumerating the grid:
+                # counting 80+ gridcells was what raised TimeoutError before.
+                cell = page.get_by_role(
+                    "gridcell", name=re.compile(f"{month_name} {int(d)}, {y}", re.I))
+                if cell.count() == 0:
+                    cell = page.get_by_role("gridcell", name=re.compile(f"^{int(d)}$"))
+                if cell.count() > 0:
+                    try:
+                        date_samples.append(
+                            (cell.first.get_attribute("aria-label") or "")[:40])
+                    except Exception:
+                        pass
+                    cell.first.click()
+                    page.wait_for_timeout(1500)
+                    shown = " ".join(page.get_by_role(
+                        "button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
+                    if date_target in shown:
+                        date_used = "cell:" + str(int(d))
+                    break
+                nxt = page.get_by_role("button", name=re.compile("next month", re.I))
+                if nxt.count() == 0:
+                    break
+                nxt.first.click()
+                page.wait_for_timeout(1200)
+    except Exception as exc:
+        date_samples.append(f"error:{type(exc).__name__}")
+    date_format_used = date_used
+
+    for label, value in (("Start time", start.split()[-1]),
                          ("End time", end.split()[-1])):
         try:
             field = page.get_by_role("combobox", name=label)
@@ -433,12 +556,24 @@ def meeting_create(page, args: dict) -> dict:
     page.keyboard.press("Escape")
     page.wait_for_timeout(1000)
 
-    if args.get("teams", True) and _switch_on(page) is False:
-        try:
-            page.locator("input[role=switch][aria-label=\"Microsoft Teams meeting\"]").first.click()
-            page.wait_for_timeout(1500)
-        except Exception:
-            pass
+    switch_state = _switch_on(page)
+    if args.get("teams", True) and switch_state is not True:
+        # It was off, or the state could not be read at all. Try the label route
+        # too: the input sits inside a label, and clicking the input itself can
+        # hit the visually hidden element instead of the switch.
+        for attempt in ("input", "role", "label"):
+            try:
+                if attempt == "input":
+                    page.locator("input[role=switch][aria-label=\"Microsoft Teams meeting\"]").first.click(force=True)
+                elif attempt == "role":
+                    page.get_by_role("switch", name=re.compile("Microsoft Teams meeting", re.I)).first.click(force=True)
+                else:
+                    page.get_by_text("Microsoft Teams meeting", exact=False).first.click()
+                page.wait_for_timeout(1500)
+            except Exception:
+                continue
+            if _switch_on(page) is True:
+                break
 
     readback = {"subject": "", "time": "", "attendee_chips": 0, "teams_on": _switch_on(page),
                 "body_head": ""}
@@ -455,8 +590,16 @@ def meeting_create(page, args: dict) -> dict:
         readback["time"] = " ".join(page.get_by_role("button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
     except Exception:
         pass
+    readback["date_ok"] = (start.split()[0] in readback["time"]) if readback["time"] else False
+    readback["date_format_used"] = date_format_used
+    readback["date_cell_labels"] = date_samples
+    readback["time_ok"] = (start.split()[-1] in readback["time"] and end.split()[-1] in readback["time"])
+    # Counting siblings of the attendees field returned 3 for one chip, so count
+    # how many of the requested addresses are actually present as text instead.
     try:
-        readback["attendee_chips"] = page.locator("[aria-label=\"Invite required attendees\"] ~ *").count()
+        composer_text = " ".join(page.inner_text("body").split()).replace(" ", "")
+        readback["attendee_chips"] = sum(
+            1 for a in attendees if a.replace(" ", "").lower() in composer_text.lower())
     except Exception:
         pass
 
@@ -468,7 +611,19 @@ def meeting_create(page, args: dict) -> dict:
 
     if args.get("dry_run"):
         _discard(page)
-        return {"ok": True, "dry_run": True, "readback": readback, "screenshot": str(shot)}
+        # A dry run that reports ok:true while the time or the switch is wrong is
+        # worse than useless: it is the rehearsal that says the play works.
+        warnings = []
+        if not readback.get("date_ok"):
+            warnings.append(f"date not applied: {readback.get('time')!r}")
+        if not readback.get("time_ok"):
+            warnings.append(f"times not applied: {readback.get('time')!r}")
+        if args.get("teams", True) and readback.get("teams_on") is not True:
+            warnings.append("Teams switch did not turn on")
+        if readback.get("attendee_chips") != len(attendees):
+            warnings.append(f"attendees: {readback.get('attendee_chips')} of {len(attendees)} found")
+        return {"ok": not warnings, "dry_run": True, "readback": readback,
+                "problems": warnings, "screenshot": str(shot)}
 
     problems = []
     if readback["subject"] != subject:
@@ -496,6 +651,108 @@ def meeting_create(page, args: dict) -> dict:
         pass
     return {"ok": True, "sent": True, "clicked": label, "readback": readback,
             "screenshot": str(shot), "page_head": after}
+
+def meeting_create_via_slot(page, args: dict) -> dict:
+    """Open the composer from the calendar grid instead of editing its date field.
+
+    The composer date control refused typing, fill() and role-based cell clicks
+    (measured 2026-11-12), while the calendar itself is driven by ordinary buttons
+    labelled like "20, November, 2026". Clicking the target day and then a time
+    slot sets both natively, which removes the unreliable field from the path.
+    """
+    subject = (args.get("subject") or "").strip()
+    start = (args.get("start") or "").strip()
+    end = (args.get("end") or "").strip()
+    attendees = [a.strip() for a in (args.get("attendees") or []) if a.strip()]
+    if not subject or not start or not end:
+        return {"ok": False, "error": "subject, start and end are required"}
+    y, m, d = start.split()[0].split("-")
+    hhmm = start.split()[-1]
+    months = ["January", "February", "March", "April", "May", "June", "July",
+              "August", "September", "October", "November", "December"]
+    month_name = months[int(m) - 1]
+
+    page.goto(calendar_url(), wait_until="domcontentloaded")
+    if not wait_for_app(page, ready_timeout()):
+        return {"ok": False, "error": "calendar did not render"}
+
+    day_button = page.get_by_role(
+        "button", name=re.compile(rf"^{int(d)},\s*{month_name},\s*{y}$", re.I))
+    nav_clicked = False
+    if day_button.count() > 0:
+        day_button.first.click()
+        nav_clicked = True
+        page.wait_for_timeout(4000)
+
+    hour = int(hhmm.split(":")[0])
+    candidates = [f"{hhmm}", f"{hour}:00", f"{hour} {chr(48)}0"]
+    slot_probe = {"nav_clicked": nav_clicked, "tried": candidates, "samples": []}
+    composer_sel = "input[placeholder=\"Add title\"]"
+
+    def composer_is_open() -> bool:
+        return page.locator(composer_sel).count() > 0
+
+    # Route 1: a label match. Only existing events carry a time in their label, so
+    # a match usually opens an event rather than a new one - the click only counts
+    # when the composer really appears, otherwise close it and move on.
+    for token in candidates[:2]:
+        slot = page.locator(f"[aria-label*='{token}']")
+        slot_probe["samples"] += [
+            (slot.nth(i).get_attribute("aria-label") or "")[:60]
+            for i in range(min(slot.count(), 5))]
+        if slot.count() > 0:
+            slot.first.click()
+            page.wait_for_timeout(4000)
+            if composer_is_open():
+                break
+            page.keyboard.press("Escape")   # the event card it opened
+            page.wait_for_timeout(1500)
+
+    # Empty slots carry no aria-label (only existing events do, e.g.
+    # "... , 14:00 to 15:00, Tuesday"), so find the column header for the day and
+    # the time gutter label, then click where they cross - which is what a person
+    # does on this grid.
+    if not composer_is_open():
+        geo = {}
+        try:
+            col = page.locator(f"[aria-label*='{month_name} {int(d)}'], [aria-label*='{int(d)}, {month_name}']")
+            if col.count() == 0:
+                col = page.get_by_role("columnheader", name=re.compile(str(int(d))))
+            gut = page.get_by_text(re.compile(rf"^\s*{hhmm.replace(chr(58), chr(58))}\s*$"))
+            if gut.count() == 0:
+                gut = page.get_by_text(hhmm, exact=False)
+            geo["col_count"] = col.count()
+            geo["gutter_count"] = gut.count()
+            try:
+                geo["col_labels"] = [
+                    (col.nth(i).get_attribute("aria-label") or "")[:40]
+                    for i in range(min(col.count(), 4))]
+            except Exception:
+                pass
+            if col.count() > 0 and gut.count() > 0:
+                col_box = col.first.bounding_box()
+                gut_box = gut.first.bounding_box()
+                geo["col_box"] = col_box
+                geo["gut_box"] = gut_box
+                if col_box and gut_box:
+                    x = col_box["x"] + col_box["width"] / 2
+                    y = gut_box["y"] + 6
+                    page.mouse.click(x, y)
+                    page.wait_for_timeout(5000)
+                    clicked_slot = True
+                    geo["clicked_at"] = [round(x), round(y)]
+        except Exception as exc:
+            geo["error"] = f"{type(exc).__name__}: {str(exc)[:60]}"
+        slot_probe["geometry"] = geo
+    composer = page.locator(composer_sel)
+    slot_probe["composer_open"] = composer.count() > 0
+    if composer.count() > 0:
+        try:
+            slot_probe["composer_time"] = " ".join(page.get_by_role(
+                "button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
+        except Exception:
+            pass
+    return {"ok": composer.count() > 0, "via_slot": True, "slot_probe": slot_probe}
 
 def serve(page) -> int:
     """One browser, many commands: JSON in, JSON out, in order."""
@@ -568,9 +825,23 @@ def main() -> int:
     if command in ("-h", "--help", "help"):
         print(USAGE)
         return 0
-    if command not in ("serve", "calibrate", "meeting-create"):
+    if command not in ("serve", "calibrate", "meeting-create", "meeting-probe-slot"):
         sys.exit(f"unknown command {command!r}; use serve, calibrate or meeting-create")
     headless = "--headless" in sys.argv[2:]
+
+    # Pre-flight before any browser work: a request this code cannot honour must
+    # fail in milliseconds, not after the human has tapped a passkey.
+    if command == "meeting-create":
+        args = _meeting_args(sys.argv[2:])
+        start = (args.get("start") or "").strip()
+        today = time.strftime("%Y-%m-%d")
+        if start and start.split()[0] != today:
+            emit({"action": "meeting-create", "ok": False, "refused": True,
+                  "error": ("only today (" + today + ") can be scheduled: the composer date "
+                            "control is unresolved. See SKILL.md 'Known limitation'."),
+                  **state_report()})
+            return 2
+
     with sync_playwright() as pw:
         ctx = open_context(pw, headless=headless)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -583,6 +854,10 @@ def main() -> int:
                 return 3
             if command == "calibrate":
                 emit({"action": "calibrate", **calibrate(page)})
+                return 0
+            if command == "meeting-probe-slot":
+                emit({"action": "meeting-probe-slot",
+                      **meeting_create_via_slot(page, _meeting_args(sys.argv[2:]))})
                 return 0
             if command == "meeting-create":
                 emit({"action": "meeting-create",

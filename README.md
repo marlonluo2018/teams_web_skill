@@ -28,6 +28,13 @@ instead of starting one per command.
 
 ## Status
 
-Scaffolding only: the resident session, `status`, and `calibrate` work. **`meeting-create` is not
-implemented** — the calendar composer has to be inspected first, and guessing its selectors is how
-an invitation reaches the wrong people. `SKILL.md` has the intended order.
+| Part | State |
+|---|---|
+| Resident session, `status`, `calibrate` | working |
+| `meeting-create`: title, attendees, **times**, body, `Microsoft Teams meeting` switch | working, read back and verified |
+| `meeting-create`: **the date** | **not working** — refuses anything but today |
+
+The date refusal is deliberate. Requesting a future date fails in ~0.5 s with exit 2 and never opens
+the browser, because creating the meeting on the wrong day would put a wrong time in front of other
+people and cannot be recalled. `SKILL.md` lists the five approaches already tried, so the next
+attempt starts from evidence rather than from a guess.

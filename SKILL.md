@@ -43,6 +43,24 @@ In `serve`, one JSON object per line, one reply per line:
 {"cmd":"quit"}
 ```
 
+## Known limitation: the meeting date cannot be set (yet)
+
+Everything else in the composer is driven successfully — title, attendees (resolves to a chip), start/end **times**, body, and the `Microsoft Teams meeting` switch (verified `checked: true`). **The date cannot.** Whatever date is asked for, the composer stays on today.
+
+What was tried, and what it did (all measured 2026-11-12):
+
+| Attempt | Result |
+|---|---|
+| `type()` four formats into `Start date` (ISO, US, EU, 2-digit year) | value never changed |
+| `fill()` on the same combobox | value never changed |
+| `get_by_role("gridcell", name="November 20, 2026")` in the picker | no match |
+| clicking the mini-calendar day button, then a time slot labelled `14:00` | matched an *existing event*, opened it instead of a new composer |
+| geometric click at the column-header / time-gutter intersection | both handles resolved to the **left navigation pane** (`x=58`), not the day column |
+
+So `meeting-create` **refuses any date other than today** rather than creating it on the wrong day. That refusal is deliberate: a meeting invite with a silently wrong date reaches other people and cannot be recalled.
+
+The remaining unknown is narrow and testable: the main calendar grid column for a given day. The next attempt should dump the grid container's own descendants (roles, labels, boxes) instead of searching the whole page by label — that is exactly what pointed at the navigation pane instead of the grid.
+
 ## Current state — read this before promising anything
 
 **`meeting-create` is not implemented yet.** The scaffolding (session, state, settings, installer, `calibrate`) is in place; the calendar composer has not been inspected, and writing a create-and-send flow from guesses is how a browser skill sends the wrong invitation to the wrong people.
