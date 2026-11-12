@@ -43,9 +43,11 @@ In `serve`, one JSON object per line, one reply per line:
 {"cmd":"quit"}
 ```
 
-## Known limitation: the meeting date cannot be set (yet)
+## The date field: solved, and how it was misread
 
-Everything else in the composer is driven successfully — title, attendees (resolves to a chip), start/end **times**, body, and the `Microsoft Teams meeting` switch (verified `checked: true`). **The date cannot.** Whatever date is asked for, the composer stays on today.
+**Resolved 2026-11-12.** The `Start date` control is an ordinary `input[type=text]` holding an ISO value (`2026-11-12`), not read-only, and `fill("2026-11-20")` writes it; `Tab` commits it. Five earlier approaches had failed because **focus was never on the input**, not because the control was special: a probe that read the element attributes (`readonly: null`, `type: "text"`, `value_before: "2026-11-12"`) and then reported `{"fill": "2026-11-20", "after_tab": "2026-11-20"}` settled it in one run.
+
+The lesson worth keeping: every failure had been attributed to the *widget* ("read-only", "needs a calendar cell", "wants a different format") when the real cause was the *interaction*. Reading the element attributes first would have cost one run instead of six.
 
 What was tried, and what it did (all measured 2026-11-12):
 
@@ -57,7 +59,7 @@ What was tried, and what it did (all measured 2026-11-12):
 | clicking the mini-calendar day button, then a time slot labelled `14:00` | matched an *existing event*, opened it instead of a new composer |
 | geometric click at the column-header / time-gutter intersection | both handles resolved to the **left navigation pane** (`x=58`), not the day column |
 
-So `meeting-create` **refuses any date other than today** rather than creating it on the wrong day. That refusal is deliberate: a meeting invite with a silently wrong date reaches other people and cannot be recalled.
+The refusal that used to guard this is gone; what remains is the read-back check — if the composer's own header does not show the requested date, `meeting-create` refuses to save rather than sending a wrong time to other people.
 
 The remaining unknown is narrow and testable: the main calendar grid column for a given day. The next attempt should dump the grid container's own descendants (roles, labels, boxes) instead of searching the whole page by label — that is exactly what pointed at the navigation pane instead of the grid.
 

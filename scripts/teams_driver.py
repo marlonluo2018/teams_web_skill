@@ -425,16 +425,6 @@ def meeting_create(page, args: dict) -> dict:
     if not subject or not start or not end:
         return {"ok": False, "error": "subject, start and end are required"}
 
-    # The composer date control is not driven yet (see SKILL.md: typing, fill()
-    # and both grid routes failed), so a meeting can only be created for the day
-    # the composer defaults to. Refusing is the point: silently creating it on
-    # today when a future date was asked for would put a wrong time in front of
-    # other people, which is worse than an error message.
-    today = time.strftime("%Y-%m-%d")
-    if start.split()[0] != today:
-        return {"ok": False, "refused": True,
-                "error": ("only today (" + today + ") can be scheduled: the composer date "
-                          "control is unresolved. See SKILL.md 'Known limitation'.")}
 
     page.goto(calendar_url(), wait_until="domcontentloaded")
     if not wait_for_app(page, ready_timeout()):
@@ -474,87 +464,58 @@ def meeting_create(page, args: dict) -> dict:
         except Exception as exc:
             return {"ok": False, "error": f"attendee {address}: {type(exc).__name__}"}
 
-    # Times first: they took effect in the first dry run, dates did not. The date
-    # field did not accept an ISO value, so try the plausible formats in turn and
-    # keep whichever one reads back correctly - discovery inside the same run
-    # instead of one passkey tap per guess.
+    # The date field turned out to be an ordinary input[type=text] holding an ISO
+    # value: fill() writes it and Tab commits it (measured 2026-11-12 - every
+    # earlier attempt failed because focus was not on the input, not because the
+    # control was read-only or the format wrong). The clock panel has to be open
+    # first, or the field does not exist yet.
     clock = page.get_by_role("button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}"))
     if clock.count() > 0:
         clock.first.click()
-        page.wait_for_timeout(2500)
+        page.wait_for_timeout(3000)
 
-    # The date field is read-only: four typed formats changed nothing (measured
-    # 2026-11-12, date_format_used came back null), so it is a calendar grid and
-    # the day has to be clicked. Walk the month if needed, then click the cell.
     date_target = start.split()[0]
     date_used = None
     date_samples = []
     try:
-        y, m, d = date_target.split("-")
-        month_names = ["January", "February", "March", "April", "May", "June", "July",
-                       "August", "September", "October", "November", "December"]
-        month_name = month_names[int(m) - 1]
         field = page.get_by_role("combobox", name="Start date")
         if field.count() > 0:
-            # fill() sets the value through the input event, which works on some
-            # comboboxes where type() did nothing; then fall back to the grid.
-            try:
-                field.first.fill(wanted_fill := f"{m}/{d}/{y}")
-                page.wait_for_timeout(1200)
-                shown = " ".join(page.get_by_role(
-                    "button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
-                if date_target in shown:
-                    date_used = "fill:" + wanted_fill
-            except Exception:
-                pass
-        if date_used is None and field.count() > 0:
-            field.first.click()
-            page.wait_for_timeout(2000)
-            wanted = f"{m}/{d}/{y}"
-            for _ in range(24):
-                # Ask for the one cell by name instead of enumerating the grid:
-                # counting 80+ gridcells was what raised TimeoutError before.
-                cell = page.get_by_role(
-                    "gridcell", name=re.compile(f"{month_name} {int(d)}, {y}", re.I))
-                if cell.count() == 0:
-                    cell = page.get_by_role("gridcell", name=re.compile(f"^{int(d)}$"))
-                if cell.count() > 0:
-                    try:
-                        date_samples.append(
-                            (cell.first.get_attribute("aria-label") or "")[:40])
-                    except Exception:
-                        pass
-                    cell.first.click()
-                    page.wait_for_timeout(1500)
-                    shown = " ".join(page.get_by_role(
-                        "button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
-                    if date_target in shown:
-                        date_used = "cell:" + str(int(d))
-                    break
-                nxt = page.get_by_role("button", name=re.compile("next month", re.I))
-                if nxt.count() == 0:
-                    break
-                nxt.first.click()
-                page.wait_for_timeout(1200)
+            field.first.fill(date_target)
+            page.wait_for_timeout(800)
+            if field.first.evaluate("e => e.value") == date_target:
+                date_used = "fill-iso"
+            # Tab commits; the picker reads the field on commit, not on input.
+            page.keyboard.press("Tab")
+            page.wait_for_timeout(1200)
     except Exception as exc:
         date_samples.append(f"error:{type(exc).__name__}")
     date_format_used = date_used
 
+    time_readback = {}
     for label, value in (("Start time", start.split()[-1]),
                          ("End time", end.split()[-1])):
         try:
             field = page.get_by_role("combobox", name=label)
             if field.count() == 0:
                 continue
-            field.first.click()
-            page.keyboard.press("Control+a")
-            field.first.type(value, delay=60)
-            page.keyboard.press("Enter")
-            page.wait_for_timeout(600)
-        except Exception:
-            continue
-    page.keyboard.press("Escape")
-    page.wait_for_timeout(1000)
+            field.first.fill(value)
+            page.wait_for_timeout(400)
+            # Same lesson as the date: the picker reads the field on commit, not
+            # on input, so Tab is what makes the value take effect.
+            page.keyboard.press("Tab")
+            page.wait_for_timeout(900)
+            time_readback[label] = field.first.evaluate("e => e.value")
+        except Exception as exc:
+            time_readback[label] = type(exc).__name__
+
+    # Move focus out instead of pressing Escape: Escape on an edited composer
+    # raises the "Discard event?" dialog, which is one Enter away from losing the
+    # whole draft.
+    try:
+        page.locator("input[placeholder=\"Add title\"]").first.click()
+        page.wait_for_timeout(1500)
+    except Exception:
+        pass
 
     switch_state = _switch_on(page)
     if args.get("teams", True) and switch_state is not True:
@@ -593,6 +554,7 @@ def meeting_create(page, args: dict) -> dict:
     readback["date_ok"] = (start.split()[0] in readback["time"]) if readback["time"] else False
     readback["date_format_used"] = date_format_used
     readback["date_cell_labels"] = date_samples
+    readback["time_fields"] = time_readback
     readback["time_ok"] = (start.split()[-1] in readback["time"] and end.split()[-1] in readback["time"])
     # Counting siblings of the attendees field returned 3 for one chip, so count
     # how many of the requested addresses are actually present as text instead.
@@ -626,6 +588,8 @@ def meeting_create(page, args: dict) -> dict:
                 "problems": warnings, "screenshot": str(shot)}
 
     problems = []
+    if not readback.get("date_ok"):
+        problems.append(f"date not applied: {readback.get('time')!r} (wanted {start})")
     if readback["subject"] != subject:
         problems.append(f"subject read back as {readback['subject']!r}")
     if body and body[:20] not in readback["body_head"]:
@@ -654,6 +618,12 @@ def meeting_create(page, args: dict) -> dict:
 
 def meeting_create_via_slot(page, args: dict) -> dict:
     """Open the composer from the calendar grid instead of editing its date field.
+
+    Kept as an alternative route, not the primary one: the composer date field
+    turned out to be an ordinary input and fill() writes it, so the slot route is
+    no longer needed. It stays because the grid is the only way to create an
+    event visually, and the day column has never been located (the ARIA search
+    resolved to the navigation pane twice).
 
     The composer date control refused typing, fill() and role-based cell clicks
     (measured 2026-11-12), while the calendar itself is driven by ordinary buttons
@@ -754,6 +724,153 @@ def meeting_create_via_slot(page, args: dict) -> dict:
             pass
     return {"ok": composer.count() > 0, "via_slot": True, "slot_probe": slot_probe}
 
+def grid_probe(page, args: dict) -> dict:
+    """Dump the main calendar grid from the inside.
+
+    Searching the whole page by label resolved to the left navigation pane twice,
+    so this walks the grid container own descendants via evaluate - which also
+    avoids the CSS-quoting that made the previous probe unreadable.
+    """
+    page.goto(calendar_url(), wait_until="domcontentloaded")
+    if not wait_for_app(page, ready_timeout()):
+        return {"ok": False, "error": "calendar did not render"}
+
+    collector = """
+    (el) => {
+      const box = (n) => { const r = n.getBoundingClientRect();
+        return {x: Math.round(r.x), y: Math.round(r.y),
+                w: Math.round(r.width), h: Math.round(r.height)}; };
+      const grab = (sel, limit) => Array.from(el.querySelectorAll(sel)).slice(0, limit)
+        .map(n => ({tag: n.tagName.toLowerCase(), role: n.getAttribute("role") || "",
+                    label: (n.getAttribute("aria-label") || "").slice(0, 60), box: box(n)}));
+      return {
+        columnheaders: grab("[role=columnheader]", 10),
+        rowheaders: grab("[role=rowheader]", 5),
+        gridcells: grab("[role=gridcell]", 8),
+        labelled: grab("[aria-label]", 25)
+      };
+    }
+    """
+
+    report: dict = {}
+    grids = page.locator("[role=grid]")
+    report["grid_count"] = grids.count()
+    best, best_area, seen = None, 0, []
+    for i in range(min(grids.count(), 8)):
+        try:
+            node = grids.nth(i)
+            box = node.bounding_box()
+            label = (node.get_attribute("aria-label") or "")[:60]
+        except Exception:
+            continue
+        seen.append({"i": i, "label": label, "box": box})
+        if box and box["width"] * box["height"] > best_area:
+            best, best_area = i, box["width"] * box["height"]
+    report["grids"] = seen
+    if best is None:
+        return {"ok": False, "error": "no grid with a box", **report}
+
+    grid = grids.nth(best)
+    report["grid_box"] = grid.bounding_box()
+    try:
+        report["inside"] = grid.evaluate(collector)
+    except Exception as exc:
+        report["inside_error"] = type(exc).__name__
+
+    gutter = []
+    try:
+        loc = page.get_by_text("14:00", exact=True)
+        for i in range(min(loc.count(), 6)):
+            gutter.append(loc.nth(i).bounding_box())
+    except Exception as exc:
+        gutter.append(str(type(exc).__name__))
+    report["gutter_1400"] = gutter
+    return {"ok": True, **report}
+
+def date_probe(page, args: dict) -> dict:
+    """Is the composer date field writable at all?
+
+    Every earlier attempt either typed without reading the field back, or probed
+    after the composer had already been dismissed, so the plain question - readonly
+    or not, and does typing change `value` - has never actually been answered.
+    """
+    page.goto(calendar_url(), wait_until="domcontentloaded")
+    if not wait_for_app(page, ready_timeout()):
+        return {"ok": False, "error": "calendar did not render"}
+
+    new_ev = page.get_by_role("button", name=re.compile("new event", re.I))
+    if new_ev.count() == 0:
+        return {"ok": False, "error": "no New event button"}
+    new_ev.first.click()
+    page.wait_for_timeout(6000)
+
+    report: dict = {}
+    clock = page.get_by_role("button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}"))
+    report["clock_found"] = clock.count() > 0
+    if clock.count() > 0:
+        clock.first.click()
+        page.wait_for_timeout(3000)
+
+    fields = {}
+    for name in ("Start date", "Start time", "End time"):
+        entry = {"found": False}
+        try:
+            loc = page.get_by_role("combobox", name=name)
+            entry["count"] = loc.count()
+            if loc.count() > 0:
+                node = loc.first
+                entry["found"] = True
+                entry["tag"] = node.evaluate("e => e.tagName.toLowerCase()")
+                for attr in ("type", "readonly", "disabled", "aria-readonly"):
+                    entry[attr] = node.get_attribute(attr)
+                entry["value_before"] = node.evaluate("e => e.value")
+        except Exception as exc:
+            entry["error"] = type(exc).__name__
+        fields[name] = entry
+    report["fields"] = fields
+
+    # The field is input[type=text], not readonly, and already holds an ISO value -
+    # so the format was never the problem, focus was. Try the three ways to put
+    # text into it and report the field value after each, so the winner is known
+    # instead of assumed.
+    target = args.get("target_date") or time.strftime("%Y-%m-%d")
+    attempts: dict = {}
+    try:
+        node = page.get_by_role("combobox", name="Start date").first
+
+        node.fill(target)
+        page.wait_for_timeout(800)
+        attempts["fill"] = node.evaluate("e => e.value")
+
+        if attempts["fill"] != target:
+            node.evaluate("e => { e.focus(); if (e.select) e.select(); }")
+            page.wait_for_timeout(300)
+            page.keyboard.type(target, delay=50)
+            page.wait_for_timeout(800)
+            attempts["focus_type"] = node.evaluate("e => e.value")
+
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(1500)
+        attempts["after_tab"] = node.evaluate("e => e.value")
+    except Exception as exc:
+        attempts["error"] = type(exc).__name__ + ": " + str(exc)[:60]
+    report["target_date"] = target
+    report["set_attempts"] = attempts
+
+    try:
+        report["header"] = " ".join(page.get_by_role(
+            "button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
+    except Exception:
+        pass
+
+    shot = skill_home() / "date-probe.png"
+    try:
+        page.screenshot(path=str(shot))
+        report["screenshot"] = str(shot)
+    except Exception:
+        pass
+    return {"ok": True, **report}
+
 def serve(page) -> int:
     """One browser, many commands: JSON in, JSON out, in order."""
     emit({"action": "serve", "ready": True, **state_report()})
@@ -805,13 +922,14 @@ def _meeting_args(argv: list[str]) -> dict:
     i = 0
     while i < len(argv):
         flag = argv[i]
-        takes_value = flag in ("--subject", "--start", "--end", "--attendee", "--body")
+        takes_value = flag in ("--subject", "--start", "--end", "--attendee", "--body",
+                              "--target-date")
         if takes_value and i + 1 < len(argv):
             value = argv[i + 1]
             if flag == "--attendee":
                 args["attendees"].append(value)
             else:
-                args[flag.lstrip("-")] = value
+                args[flag.lstrip("-").replace("-", "_")] = value
             i += 2
             continue
         if flag == "--no-teams":
@@ -825,22 +943,13 @@ def main() -> int:
     if command in ("-h", "--help", "help"):
         print(USAGE)
         return 0
-    if command not in ("serve", "calibrate", "meeting-create", "meeting-probe-slot"):
+    if command not in ("serve", "calibrate", "meeting-create", "meeting-probe-slot", "grid-probe", "date-probe"):
         sys.exit(f"unknown command {command!r}; use serve, calibrate or meeting-create")
     headless = "--headless" in sys.argv[2:]
 
-    # Pre-flight before any browser work: a request this code cannot honour must
-    # fail in milliseconds, not after the human has tapped a passkey.
-    if command == "meeting-create":
-        args = _meeting_args(sys.argv[2:])
-        start = (args.get("start") or "").strip()
-        today = time.strftime("%Y-%m-%d")
-        if start and start.split()[0] != today:
-            emit({"action": "meeting-create", "ok": False, "refused": True,
-                  "error": ("only today (" + today + ") can be scheduled: the composer date "
-                            "control is unresolved. See SKILL.md 'Known limitation'."),
-                  **state_report()})
-            return 2
+    # Pre-flight before any browser work: nothing to refuse here any more, the date
+    # field turned out to be fillable. The guard that matters now runs inside the
+    # composer, against the value the page actually shows.
 
     with sync_playwright() as pw:
         ctx = open_context(pw, headless=headless)
@@ -854,6 +963,12 @@ def main() -> int:
                 return 3
             if command == "calibrate":
                 emit({"action": "calibrate", **calibrate(page)})
+                return 0
+            if command == "date-probe":
+                emit({"action": "date-probe", **date_probe(page, _meeting_args(sys.argv[2:]))})
+                return 0
+            if command == "grid-probe":
+                emit({"action": "grid-probe", **grid_probe(page, _meeting_args(sys.argv[2:]))})
                 return 0
             if command == "meeting-probe-slot":
                 emit({"action": "meeting-probe-slot",
