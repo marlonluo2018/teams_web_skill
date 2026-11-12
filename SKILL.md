@@ -1,11 +1,10 @@
 ---
 name: teams_web_skill
 description: |
-  Microsoft 365 web automation over a resident, human-authenticated browser session —
-  for the things the desktop COM skill cannot do: creating calendar meetings that need a
-  Teams join link, and working on macOS. Use when the user asks for a Teams meeting link
-  or a meeting invite on a non-Windows machine. This drives the web UI in a real browser;
-  it is NOT the Microsoft Graph API and needs no app registration or token.
+  Teams meeting links for Microsoft 365 when the Graph API is not permitted and win32com
+  cannot insert one: it creates the calendar meeting with a real Teams join link, and works on
+  macOS too. Use when the user asks for a Teams meeting link or a meeting invite. This drives
+  the web UI in a real browser; it is NOT the Graph API and needs no app registration or token.
 triggers: [
   "teams meeting link", "create a meeting invite", "teams 会议链接", "建会议邀请",
   "schedule a teams meeting", "约个 teams 会议", "meeting invite on mac"
@@ -15,7 +14,7 @@ operations: ["serve", "calibrate"]
 
 # Microsoft 365 (web) — resident session
 
-This drives Microsoft 365 in a real browser with the user own session. No Graph token, no app registration, no admin consent — the same shape as `slack_browser_skill`, applied to Microsoft 365.
+Two paths are closed, which is why this exists. **The Graph API is not permitted** where this runs, so `isOnlineMeeting` is not available to mint a join link. **win32com cannot insert one either** — on this account `IsOnlineMeeting` stays False and `OnlineMeeting` is unavailable, so the desktop path can create a meeting but never a Teams link. What is left is the web UI: tick `Microsoft Teams meeting` in the composer and the service generates the link. This drives that UI in a real browser with the user own session — no Graph token, no app registration, no admin consent. Same shape as `slack_web_skill`, applied to Microsoft 365.
 
 ## Why a *resident* session, and not a browser per command
 

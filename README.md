@@ -1,10 +1,14 @@
 # teams_web_skill
 
-**The solution for a meeting invite that carries a real Teams join link, when the desktop path cannot make one.**
+**Teams meeting links on Microsoft 365, where the Graph API is not permitted and win32com cannot insert one.**
 
-It drives the Microsoft 365 web UI (the Outlook calendar) in Chromium with the user's own SSO
-session: it fills the event composer, switches on `Microsoft Teams meeting`, and sends. The join link is
-minted by the service when the meeting is created — nothing is pasted in, and nothing is invented.
+Both of those paths are closed: the Graph API is not allowed, so `isOnlineMeeting` is not available
+to mint a join link; and win32com cannot attach one either — `IsOnlineMeeting` stays False and
+`OnlineMeeting` is unavailable, so the desktop path can create a meeting but never a Teams link.
+
+What is left is the web UI, which is what this drives: the Outlook calendar in Chromium with the
+user's own SSO session. It fills the composer, switches on `Microsoft Teams meeting`, and sends. The
+join link is minted by the service at creation — nothing pasted in, nothing invented.
 
 ## Who does what
 
