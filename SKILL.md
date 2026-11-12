@@ -43,9 +43,9 @@ In `serve`, one JSON object per line, one reply per line:
 {"cmd":"quit"}
 ```
 
-## Known limitation: the composer applies its own time zone (+2:30 here)
+## The time zone trap: solved (it cost four wrong saves)
 
-Setting times works, **but the stored event is 2 h 30 min later than what was typed**:
+**Resolved 2026-11-12.** While the account calendar time zone was India (UTC+5:30), every typed time was stored 2 h 30 min later:
 
 | Typed | Composer header showed | Stored (read back via Outlook COM) |
 |---|---|---|
@@ -61,7 +61,12 @@ Setting times works, **but the stored event is 2 h 30 min later than what was ty
 
 **What this means for use:** a `meeting-create` run produces a correct title, attendees, body and Teams link, but the time lands 2:30 late. Until the event time zone is fixed in the account, this skill must not be used for a real invitation without a human checking the time afterwards — and the check has to read the *stored* event (Outlook COM on Windows, or the calendar UI), never the composer, because the composer header shows the typed values, not the stored ones.
 
-The next step is the account setting, not more automation: Outlook → Settings → Calendar → Events and invitations → time zone for new events. The alternative, if it cannot be changed, is an explicit `timezone_shift` option applied to the typed time and verified against a read-back — never a silent compensation.
+**The fix was the account calendar time zone**, set to China in Outlook web settings (Settings → Calendar). After that the same probe stored `09:00-10:00` exactly as typed, read back through Outlook COM. No code change was needed: the driver types local wall-clock times and the account tells Outlook which zone they mean.
+
+Two habits this leaves behind:
+
+- **Verify against the stored event, never the composer.** The composer header mirrors what was typed even when the stored value differs, so a read-back of the composer proves nothing. On Windows, `outlook_skill.py list-calendar` is the cheap independent check.
+- **A uniform offset is a timezone, not a bug in the typing.** Two saves drifting by the same 2:30 pointed at the zone, not at `fill()`. Measuring the same operation twice and comparing was what identified it.
 
 ## The date field: solved, and how it was misread
 
@@ -83,15 +88,18 @@ The refusal that used to guard this is gone; what remains is the read-back check
 
 The remaining unknown is narrow and testable: the main calendar grid column for a given day. The next attempt should dump the grid container's own descendants (roles, labels, boxes) instead of searching the whole page by label — that is exactly what pointed at the navigation pane instead of the grid.
 
-## Current state — read this before promising anything
+## Current state
 
-**`meeting-create` is not implemented yet.** The scaffolding (session, state, settings, installer, `calibrate`) is in place; the calendar composer has not been inspected, and writing a create-and-send flow from guesses is how a browser skill sends the wrong invitation to the wrong people.
+`meeting-create` works end to end, verified on 2026-11-12 against a real invitation addressed to the user own mailbox:
 
-Order of work, deliberately:
+| Step | Evidence |
+|---|---|
+| resident session | passkey sign-in, Teams UI rendered |
+| title, body, attendees, date, times, Teams switch | typed and read back in the composer |
+| Teams join link | present in the delivered invitation body (`teams.microsoft.com/l/meetup-join/...`) |
+| send | `composer_closed: true`; the appointment and its time confirmed by reading the stored event |
 
-1. `calibrate` against a live session — collects the real `aria-label`/role names of the event composer and its Teams control;
-2. only then implement `meeting-create`;
-3. verify on a real invite addressed to the user own mailbox before anyone else is involved.
+What it does **not** do: send Teams chat messages, accept or decline incoming invitations (that stays with `outlook_com_skill`), or run unattended — every new browser session needs a passkey.
 
 ## Selector policy
 
