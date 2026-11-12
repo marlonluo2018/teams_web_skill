@@ -26,7 +26,7 @@ Consequences, both of which shape everything below:
 - **The browser stays open** for the whole working session; commands arrive as JSON lines. A one-browser-per-command design (what the Slack skill does) cannot work here.
 - **The passkey is the human step.** The agent never types credentials, and cannot: the prompt wants a PIN, fingerprint or face.
 
-Headless is allowed *inside* an already-authenticated resident session, but it cannot start one.
+Headless is allowed *inside* an already-authenticated resident session, but it cannot start one — measured again 2026-11-12: `serve --headless` against a stored profile stopped at `login.microsoftonline.com` and exited 3 after the full timeout. Headed runs still need the passkey tap each session; the SSO redirect reaches `login.w3.ibm.com` and waits there for the human.
 
 ## Commands
 
@@ -111,7 +111,11 @@ Same rule as email and Slack: **never create-and-send an invitation without an a
 
 One thing the approval cannot show: **the join link does not exist until the meeting is created**, so it is generated during the approved action. Say so explicitly in the approval block — an approval that hides that fact is a blind approval.
 
-Failure has one dangerous shape here, because create-and-send happens in one go: a half-completed run can leave the meeting created but unsent, or sent but unreported. The driver must report **which** of those happened, and a retry must first look for a meeting already on the calendar with the same subject and time. Two invitations to the same meeting is a visible mistake to everyone invited.
+Failure has one dangerous shape here, because create-and-send happens in one go: a half-completed run can leave the meeting created but unsent, or **sent but reported unsent**.
+
+That second case happened here on 2026-11-12. A run ended with `composer_closed: false` and reported `sent: false`, and the invitation had in fact been delivered: the "Please wait ... creating a Teams meeting" modal keeps the composer on screen *after* the send completes, so the composer is not evidence either way. Only `Sent Items` is.
+
+**Before retrying a run that reported failure, look for the invitation in `Sent Items`** (`outlook_skill.py find --subject "<subject>" --folder "Sent Items"`). Two invitations to one meeting is visible to everyone invited, and the only thing that prevents it is checking the sent folder, not the browser.
 
 ## Cross-platform
 
