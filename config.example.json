@@ -1,0 +1,7 @@
+{
+  "app_url": "https://teams.cloud.microsoft/",
+  "calendar_url": "https://outlook.office.com/calendar/",
+  "browser_channel": null,
+  "profile": null,
+  "ready_timeout": 300
+}

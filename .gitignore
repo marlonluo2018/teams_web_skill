@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.log
+.DS_Store
+Thumbs.db
+
+# A machine's own settings must never be committed (workspace-specific).
+config.json
+# Portable state and any browser profile kept inside the checkout: it holds a
+# live session, which must never be committable.
+.state/
+profile/
