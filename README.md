@@ -21,11 +21,12 @@ session has expired.**
 2. When it has expired, the agent opens a window on the sign-in page and **you** approve it with
    your passkey — PIN, fingerprint or face. The agent never sees the credential. Then the agent
    does the work: title, attendees, date, times, body, the Teams switch, and the send.
-3. **A window opens for each run.** Headless cannot get in even with a valid stored session: it
-   clears the earlier sign-in steps and then stops at the IdP's passkey prompt, which headless cannot
-   satisfy — the service asks the same profile for a passkey when it is headless and lets it in
-   silently when it is not (measured 2026-11-12). That is why `serve` exists: one session, many
-   commands, one boot.
+3. **A window is needed for each run, but it does not have to be in your way.** Headless cannot get
+   in even with a valid stored session: it clears the earlier sign-in steps and stops at the IdP's
+   passkey prompt, which a headless browser cannot satisfy (measured 2026-11-12). `--offscreen` keeps
+   the browser headed — a normal browser, nothing disguised — and parks its window outside the
+   desktop; verified: `landed` with `window.screenX = -32000`. If the stored session has expired it
+   reopens visibly, because a passkey prompt off-screen is one nobody can answer.
 
 **What that means in practice:** be reachable for the occasional sign-in, and expect a Chromium
 window on each run. It is not a scheduled job.
@@ -76,6 +77,7 @@ with **env var > config file > default**:
 | `calendar_url` | `TEAMS_SKILL_CALENDAR_URL` | the Outlook calendar |
 | `browser_channel` | `TEAMS_SKILL_BROWSER_CHANNEL` | bundled Chromium; set `msedge`/`chrome` if the passkey prompt does not appear |
 | `ready_timeout` | `TEAMS_SKILL_READY_TIMEOUT` | 300 s to reach the app after sign-in |
+| `offscreen` | `TEAMS_SKILL_OFFSCREEN` | off — run without parking the window off the desktop |
 | `idp_hosts` | `TEAMS_SKILL_IDP_HOSTS` | empty — add your corporate sign-in host(s), comma separated, so its page is recognised as a sign-in page rather than as the app |
 | `profile` | `TEAMS_SKILL_PROFILE` | the browser profile under the per-user data directory |
 

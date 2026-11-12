@@ -153,7 +153,13 @@ def emit(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
-def open_context(playwright, headless: bool = False):
+def open_context(playwright, headless: bool = False, offscreen: bool = False):
+    """Launch the persistent context.
+
+    offscreen keeps the browser headed - the sign-in only works headed, measured - but parks
+    the window far off the desktop, so a run does not interrupt whatever else is on screen.
+    Nothing about the browser identity changes; only where the window sits.
+    """
     path = profile_dir()
     path.mkdir(parents=True, exist_ok=True)
     channel = str(setting("TEAMS_SKILL_BROWSER_CHANNEL", "browser_channel", "") or "").strip()
@@ -163,6 +169,8 @@ def open_context(playwright, headless: bool = False):
         "viewport": {"width": 1500, "height": 950},
         "args": ["--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble"],
     }
+    if offscreen:
+        options["args"] = list(options["args"]) + ["--window-position=-32000,-32000"]
     if channel:
         options["channel"] = channel
     return playwright.chromium.launch_persistent_context(**options)
@@ -1390,9 +1398,13 @@ USAGE = """teams_web_skill - resident M365 web automation
         --start "2026-11-13 14:00" --end "2026-11-13 15:00" --attendee a@b.c
         [--body TEXT] [--no-teams] [--dry-run]
 
-A new browser session needs a passkey tap at the corporate IdP, so the browser stays open:
-start one, keep it, and send commands ({"cmd":"status"}, {"cmd":"calibrate"},
-{"cmd":"quit"}) on stdin.
+Headless cannot get past the corporate sign-in (measured: it stops at the passkey prompt), so
+every run needs a window. --offscreen parks that window outside the desktop and stays a normal
+headed browser; if the stored session has expired it reopens visibly, because the passkey prompt
+is useless off-screen.
+
+While the stored session is valid, nothing is asked. When it has expired, one passkey tap in the
+window is the only human step.
 """
 def _meeting_args(argv: list[str]) -> dict:
     """Minimal flag parser: --subject/--start/--end/--attendee(repeat)/--body/--no-teams/--dry-run."""
@@ -1424,19 +1436,34 @@ def main() -> int:
     if command not in ("serve", "calibrate", "meeting-create", "meeting-probe-slot", "grid-probe", "date-probe", "time-probe", "save-probe", "slot-create", "tz-probe", "tz-set-probe"):
         sys.exit(f"unknown command {command!r}; use serve, calibrate or meeting-create")
     headless = "--headless" in sys.argv[2:]
-
-    # Pre-flight before any browser work: nothing to refuse here any more, the date
-    # field turned out to be fillable. The guard that matters now runs inside the
-    # composer, against the value the page actually shows.
+    flag_offscreen = "--offscreen" in sys.argv[2:]
+    setting_offscreen = str(setting("TEAMS_SKILL_OFFSCREEN", "offscreen", "") or "").strip().lower()
+    offscreen = flag_offscreen or setting_offscreen in ("1", "true", "yes", "on")
 
     with sync_playwright() as pw:
-        ctx = open_context(pw, headless=headless)
+        ctx = open_context(pw, headless=headless, offscreen=offscreen)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         try:
             page.goto(app_url(), wait_until="domcontentloaded")
-            if not wait_for_app(page, ready_timeout()):
+            ready = wait_for_app(page, ready_timeout())
+
+            # Offscreen parks the window outside the desktop, so if the stored session has
+            # expired the passkey prompt appears where nobody can see it. Retry once with a
+            # visible window instead of sitting out the timeout on a page no one can reach.
+            if not ready and offscreen:
+                print(
+                    "offscreen: app did not load (session likely expired) - reopening visibly",
+                    file=sys.stderr,
+                )
+                ctx.close()
+                ctx = open_context(pw, headless=headless, offscreen=False)
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto(app_url(), wait_until="domcontentloaded")
+                ready = wait_for_app(page, ready_timeout())
+
+            if not ready:
                 emit({"action": "ready", "ok": False, "url": (page.url or "")[:90],
-                      "hint": "sign in in the window; every new session needs a passkey",
+                      "hint": "the stored session has expired: sign in in the window that opened",
                       **state_report()})
                 return 3
             if command == "calibrate":
