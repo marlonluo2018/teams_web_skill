@@ -933,6 +933,404 @@ def date_probe(page, args: dict) -> dict:
         pass
     return {"ok": True, **report}
 
+def time_probe(page, args: dict) -> dict:
+    """Do the picker edits survive closing the panel?
+
+    The last real send saved 16:30-17:30 while the composer header read
+    14:00-15:00, so something discards the typed values. This records three
+    snapshots: the panel before, the header after closing it, and the panel
+    reopened - which shows whether the values ever stuck.
+    """
+    target = args.get("target_date") or time.strftime("%Y-%m-%d")
+    start_time = (args.get("start") or "14:00").split()[-1]
+    end_time = (args.get("end") or "15:00").split()[-1]
+    report: dict = {"target": [target, start_time, end_time]}
+
+    page.goto(calendar_url(), wait_until="domcontentloaded")
+    if not wait_for_app(page, ready_timeout()):
+        return {"ok": False, "error": "calendar did not render"}
+    page.get_by_role("button", name=re.compile("new event", re.I)).first.click()
+    page.wait_for_timeout(6000)
+
+    clock = page.get_by_role("button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}"))
+    clock.first.click()
+    page.wait_for_timeout(3000)
+
+    def read_fields() -> dict:
+        out = {}
+        for name in ("Start date", "Start time", "End time"):
+            try:
+                out[name] = page.get_by_role("combobox", name=name).first.evaluate("e => e.value")
+            except Exception:
+                out[name] = None
+        return out
+
+    def read_header() -> str:
+        try:
+            return " ".join(page.get_by_role(
+                "button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
+        except Exception:
+            return ""
+
+    report["before"] = {**read_fields(), "header": read_header()}
+
+    for name, value in (("Start date", target), ("Start time", start_time), ("End time", end_time)):
+        try:
+            field = page.get_by_role("combobox", name=name).first
+            field.fill(value)
+            page.wait_for_timeout(400)
+            page.keyboard.press("Tab")
+            page.wait_for_timeout(700)
+        except Exception as exc:
+            report.setdefault("fill_errors", {})[name] = type(exc).__name__
+    report["after_fill"] = {**read_fields(), "header": read_header()}
+
+    # close the panel the way a user would, then look at the header
+    try:
+        clock.first.click()
+        page.wait_for_timeout(2500)
+        report["after_close"] = {"header": read_header()}
+    except Exception as exc:
+        report["close_error"] = type(exc).__name__
+
+    # reopen: do the typed values persist?
+    try:
+        clock.first.click()
+        page.wait_for_timeout(2500)
+        report["after_reopen"] = {**read_fields(), "header": read_header()}
+    except Exception as exc:
+        report["reopen_error"] = type(exc).__name__
+
+    shot = skill_home() / "time-probe.png"
+    try:
+        page.screenshot(path=str(shot))
+        report["screenshot"] = str(shot)
+    except Exception:
+        pass
+    return {"ok": True, **report}
+
+def save_probe(page, args: dict) -> dict:
+    """What time does a saved event actually get?
+
+    A send reported 14:00-15:00 in the composer while the stored appointment was
+    16:30-17:30, so the display is not evidence. This saves an event WITHOUT
+    attendees - which sends no invitation to anybody - so the stored result can be
+    read back safely and compared with what was typed.
+    """
+    target = args.get("target_date") or time.strftime("%Y-%m-%d")
+    start_time = (args.get("start") or "14:00").split()[-1]
+    end_time = (args.get("end") or "15:00").split()[-1]
+    title = args.get("subject") or "[TEST] save probe"
+
+    page.goto(calendar_url(), wait_until="domcontentloaded")
+    if not wait_for_app(page, ready_timeout()):
+        return {"ok": False, "error": "calendar did not render"}
+    page.get_by_role("button", name=re.compile("new event", re.I)).first.click()
+    page.wait_for_timeout(6000)
+    page.locator("input[placeholder=\"Add title\"]").first.fill(title)
+    page.wait_for_timeout(700)
+
+    clock = page.get_by_role("button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}"))
+    clock.first.click()
+    page.wait_for_timeout(3000)
+    for name, value in (("Start date", target), ("Start time", start_time), ("End time", end_time)):
+        field = page.get_by_role("combobox", name=name).first
+        field.fill(value)
+        page.wait_for_timeout(400)
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(600)
+    typed = {}
+    for name in ("Start date", "Start time", "End time"):
+        try:
+            typed[name] = page.get_by_role("combobox", name=name).first.evaluate("e => e.value")
+        except Exception:
+            typed[name] = None
+
+    # close the panel by clicking the composer header area, then save
+    page.locator("input[placeholder=\"Add title\"]").first.click()
+    page.wait_for_timeout(1500)
+    header_before_save = ""
+    try:
+        header_before_save = " ".join(page.get_by_role(
+            "button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
+    except Exception:
+        pass
+
+    save = page.get_by_role("button", name=re.compile("^(Save|Send)$", re.I))
+    clicked = ""
+    if save.count() > 0:
+        clicked = " ".join((save.first.inner_text() or "").split())
+        save.first.click()
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        if page.locator("input[placeholder=\"Add title\"]").count() == 0:
+            break
+        page.wait_for_timeout(2000)
+    closed = page.locator("input[placeholder=\"Add title\"]").count() == 0
+    return {"ok": closed, "typed": typed, "header_before_save": header_before_save,
+            "clicked": clicked, "composer_closed": closed, "title": title}
+
+def slot_create(page, args: dict) -> dict:
+    """Create the event by clicking the calendar grid at the wanted day and time.
+
+    The composer time picker only updates its own display: two independent runs
+    saved 16:30-17:30 while the panel read 14:00-15:00 (one with an attendee, one
+    without). So the grid is the remaining native route - it hands date and time
+    to the composer instead of asking the picker to change them.
+
+    The grid has no ARIA semantics (the only role=grid on the page is the small
+    navigation month picker), so this reads pixel geometry: the time-gutter labels
+    give the vertical scale, the day headers give the columns, and the click goes
+    at their intersection. Everything measured is reported, so a failure is
+    diagnosable rather than mysterious.
+    """
+    target = args.get("target_date") or time.strftime("%Y-%m-%d")
+    start_time = (args.get("start") or "14:00").split()[-1]
+    report: dict = {"target_date": target, "start_time": start_time}
+
+    page.goto(calendar_url(), wait_until="domcontentloaded")
+    if not wait_for_app(page, ready_timeout()):
+        return {"ok": False, "error": "calendar did not render"}
+    page.wait_for_timeout(3000)
+
+    collector = """
+    () => {
+      const box = (n) => { const r = n.getBoundingClientRect();
+        return {x: Math.round(r.x), y: Math.round(r.y),
+                w: Math.round(r.width), h: Math.round(r.height)}; };
+      const times = [];
+      const days = [];
+      const all = document.querySelectorAll("div,span,th,td,button");
+      for (const n of all) {
+        const text = (n.textContent || "").trim();
+        if (!text || text.length > 24) continue;
+        const b = box(n);
+        if (b.w === 0 || b.h === 0) continue;
+        if (/^[0-9]{1,2}:[0-9]{2}[ ]*(AM|PM)?$/i.test(text) && b.w < 90) {
+          times.push({text: text, box: b});
+        }
+        if (/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*[ ]+[0-9]{1,2}$/i.test(text) && b.w < 160) {
+          days.push({text: text, box: b});
+        }
+      }
+      return {times: times, days: days};
+    }
+    """
+
+    try:
+        geom = page.evaluate(collector)
+    except Exception as exc:
+        return {"ok": False, "error": "geometry: " + type(exc).__name__}
+
+    times = geom.get("times") or []
+    days = geom.get("days") or []
+    report["time_labels"] = [t["text"] for t in times][:30]
+    report["day_labels"] = [d["text"] for d in days][:10]
+    if not times or not days:
+        return {"ok": False, "error": "no geometry", **report}
+
+    # vertical scale from two labelled rows, preferring 24h labels
+    def minutes(label: str) -> int | None:
+        m = re.match(r"([0-9]{1,2}):([0-9]{2})\s*(AM|PM)?", label.strip(), re.I)
+        if not m:
+            return None
+        hh, mm, suffix = int(m.group(1)), int(m.group(2)), (m.group(3) or "").upper()
+        if suffix == "PM" and hh != 12:
+            hh += 12
+        if suffix == "AM" and hh == 12:
+            hh = 0
+        return hh * 60 + mm
+
+    points = []
+    for item in times:
+        mins = minutes(item["text"])
+        if mins is not None:
+            points.append((mins, item["box"]))
+    points.sort(key=lambda p: p[1]["y"])
+    report["pixels_per_minute"] = None
+    if len(points) >= 2:
+        (m0, b0), (m1, b1) = points[0], points[1]
+        if m1 != m0:
+            report["pixels_per_minute"] = round((b1["y"] - b0["y"]) / (m1 - m0), 3)
+    report["grid_origin"] = {"x": points[0][1]["x"], "y": points[0][1]["y"], "min": points[0][0]}
+
+    # the rightmost day column that matches the wanted weekday, by date number
+    day_num = int(target.split("-")[2])
+    column = None
+    for item in days:
+        if re.search(r"\b" + str(day_num) + r"$", item["text"].strip()):
+            column = item
+    report["column"] = column["text"] if column else None
+    report["column_box"] = column["box"] if column else None
+    if column is None or report["pixels_per_minute"] is None:
+        return {"ok": False, "error": "column or scale not found", **report}
+
+    start_mins = minutes(start_time) or 0
+    scale = report["pixels_per_minute"]
+    origin = report["grid_origin"]
+    click_x = column["box"]["x"] + column["box"]["w"] / 2
+    click_y = origin["y"] + (start_mins - origin["min"]) * scale + 6
+    report["click_at"] = [round(click_x), round(click_y)]
+    page.mouse.click(click_x, click_y)
+    page.wait_for_timeout(6000)
+
+    title_input = page.locator("input[placeholder=\"Add title\"]")
+    report["composer_open"] = title_input.count() > 0
+    if report["composer_open"]:
+        try:
+            report["composer_header"] = " ".join(page.get_by_role(
+                "button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
+        except Exception:
+            pass
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(1500)
+            ok = page.get_by_role("button", name=re.compile("^ok$", re.I))
+            if ok.count() > 0:
+                ok.first.click()
+        except Exception:
+            pass
+    shot = skill_home() / "slot-create.png"
+    try:
+        page.screenshot(path=str(shot))
+        report["screenshot"] = str(shot)
+    except Exception:
+        pass
+    return {"ok": report.get("composer_open", False), **report}
+
+def tz_probe(page, args: dict) -> dict:
+    """Which timezone does the composer think it is in?
+
+    Two saves came back exactly +2:30 from what was typed (09:00 -> 11:30, 14:00
+    -> 16:30), which is the gap between UTC+8 and UTC+5:30 - so the event is being
+    interpreted in India time. This records what the browser reports, what the
+    composer Time zone control shows, and what options it offers.
+    """
+    report: dict = {}
+    page.goto(calendar_url(), wait_until="domcontentloaded")
+    if not wait_for_app(page, ready_timeout()):
+        return {"ok": False, "error": "calendar did not render"}
+    report["intl_tz"] = page.evaluate("() => Intl.DateTimeFormat().resolvedOptions().timeZone")
+    report["offset_min"] = page.evaluate("() => new Date().getTimezoneOffset()")
+
+    page.get_by_role("button", name=re.compile("new event", re.I)).first.click()
+    page.wait_for_timeout(6000)
+    clock = page.get_by_role("button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}"))
+    clock.first.click()
+    page.wait_for_timeout(3000)
+
+    # the Time zone label sits next to a globe button in the expanded panel
+    candidates = []
+    try:
+        for node in page.locator("button, input, [role=combobox]").all()[:200]:
+            try:
+                label = (node.get_attribute("aria-label") or "")
+                title = (node.get_attribute("title") or "")
+                value = node.evaluate("e => e.value || e.textContent || \"\"")
+            except Exception:
+                continue
+            blob = (label + " " + title + " " + str(value)).strip()
+            if re.search("time ?zone|UTC|GMT|Asia|Shanghai|Kolkata|India", blob, re.I):
+                candidates.append(blob[:80])
+    except Exception as exc:
+        report["scan_error"] = type(exc).__name__
+    report["tz_controls"] = candidates[:12]
+
+    try:
+        globe = page.get_by_role("button", name=re.compile("time ?zone", re.I))
+        report["globe_count"] = globe.count()
+        if globe.count() > 0:
+            globe.first.click()
+            page.wait_for_timeout(2500)
+            opts = page.get_by_role("option")
+            report["option_count"] = opts.count()
+            report["options"] = [
+                " ".join((opts.nth(i).inner_text() or "").split())[:40]
+                for i in range(min(opts.count(), 10))]
+    except Exception as exc:
+        report["globe_error"] = type(exc).__name__
+
+    shot = skill_home() / "tz-probe.png"
+    try:
+        page.screenshot(path=str(shot))
+        report["screenshot"] = str(shot)
+    except Exception:
+        pass
+    return {"ok": True, **report}
+
+def tz_set_probe(page, args: dict) -> dict:
+    """What does the composer timezone control open into?
+
+    The toolbar reads "More options More options IndiaIndia" and the composer stores
+    every typed time as India time (+2:30 from Beijing), which is why three saves
+    came back shifted. Changing the account default did not move it, so the switch
+    has to be flipped per event - this finds out how.
+    """
+    report: dict = {}
+    page.goto(calendar_url(), wait_until="domcontentloaded")
+    if not wait_for_app(page, ready_timeout()):
+        return {"ok": False, "error": "calendar did not render"}
+    page.get_by_role("button", name=re.compile("new event", re.I)).first.click()
+    page.wait_for_timeout(6000)
+
+    opener = None
+    for selector in ("[aria-label*='India']", "text=India"):
+        try:
+            loc = page.locator(selector)
+            if loc.count() > 0:
+                opener = loc.first
+                report["opener_selector"] = selector
+                break
+        except Exception:
+            continue
+    if opener is None:
+        return {"ok": False, "error": "no India control found", **report}
+
+    try:
+        report["opener_label"] = (opener.get_attribute("aria-label") or "")[:60]
+        report["opener_text"] = " ".join((opener.inner_text() or "").split())[:60]
+        opener.click()
+        page.wait_for_timeout(2500)
+    except Exception as exc:
+        return {"ok": False, "error": "click: " + type(exc).__name__, **report}
+
+    collector = """
+    () => {
+      const grab = (sel, limit) => Array.from(document.querySelectorAll(sel))
+        .filter(n => n.getBoundingClientRect().width > 0)
+        .slice(0, limit)
+        .map(n => ({role: n.getAttribute("role") || n.tagName.toLowerCase(),
+                    text: (n.textContent || "").trim().slice(0, 40),
+                    aria: (n.getAttribute("aria-label") || "").slice(0, 40)}));
+      return {options: grab("[role=option]", 12),
+              menuitems: grab("[role=menuitem]", 12),
+              listboxes: grab("[role=listbox]", 4),
+              comboboxes: grab("[role=combobox]", 8),
+              zones: grab("*", 0)};
+    }
+    """
+    try:
+        report["popup"] = page.evaluate(collector)
+    except Exception as exc:
+        report["popup_error"] = type(exc).__name__
+
+    # also collect any visible text mentioning a zone name
+    try:
+        zones = page.get_by_text(re.compile("(UTC|GMT|Asia|Kolkata|Shanghai|India)", re.I))
+        report["zone_texts"] = [
+            " ".join((zones.nth(i).inner_text() or "").split())[:40]
+            for i in range(min(zones.count(), 12))]
+    except Exception as exc:
+        report["zone_error"] = type(exc).__name__
+
+    shot = skill_home() / "tz-set-probe.png"
+    try:
+        page.screenshot(path=str(shot))
+        report["screenshot"] = str(shot)
+    except Exception:
+        pass
+    return {"ok": True, **report}
+
 def serve(page) -> int:
     """One browser, many commands: JSON in, JSON out, in order."""
     emit({"action": "serve", "ready": True, **state_report()})
@@ -1005,7 +1403,7 @@ def main() -> int:
     if command in ("-h", "--help", "help"):
         print(USAGE)
         return 0
-    if command not in ("serve", "calibrate", "meeting-create", "meeting-probe-slot", "grid-probe", "date-probe"):
+    if command not in ("serve", "calibrate", "meeting-create", "meeting-probe-slot", "grid-probe", "date-probe", "time-probe", "save-probe", "slot-create", "tz-probe", "tz-set-probe"):
         sys.exit(f"unknown command {command!r}; use serve, calibrate or meeting-create")
     headless = "--headless" in sys.argv[2:]
 
@@ -1025,6 +1423,21 @@ def main() -> int:
                 return 3
             if command == "calibrate":
                 emit({"action": "calibrate", **calibrate(page)})
+                return 0
+            if command == "tz-set-probe":
+                emit({"action": "tz-set-probe", **tz_set_probe(page, _meeting_args(sys.argv[2:]))})
+                return 0
+            if command == "tz-probe":
+                emit({"action": "tz-probe", **tz_probe(page, _meeting_args(sys.argv[2:]))})
+                return 0
+            if command == "slot-create":
+                emit({"action": "slot-create", **slot_create(page, _meeting_args(sys.argv[2:]))})
+                return 0
+            if command == "save-probe":
+                emit({"action": "save-probe", **save_probe(page, _meeting_args(sys.argv[2:]))})
+                return 0
+            if command == "time-probe":
+                emit({"action": "time-probe", **time_probe(page, _meeting_args(sys.argv[2:]))})
                 return 0
             if command == "date-probe":
                 emit({"action": "date-probe", **date_probe(page, _meeting_args(sys.argv[2:]))})

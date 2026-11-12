@@ -43,6 +43,26 @@ In `serve`, one JSON object per line, one reply per line:
 {"cmd":"quit"}
 ```
 
+## Known limitation: the composer applies its own time zone (+2:30 here)
+
+Setting times works, **but the stored event is 2 h 30 min later than what was typed**:
+
+| Typed | Composer header showed | Stored (read back via Outlook COM) |
+|---|---|---|
+| 2026-11-24 09:00–10:00 | 09:00–10:00 | **11:30–12:30** |
+| 2026-11-20 14:00–15:00 | 14:00–15:00 | **16:30–17:30** |
+
++2:30 is the gap between UTC+8 (Beijing) and UTC+5:30 (India), and the composer toolbar carries a control whose text is `India`. So the new-event time zone is India, and every typed time is interpreted there. Established so far:
+
+- the browser reports `Asia/Shanghai` (checked with `Intl`, and again with `timezone_id` forced) — not the browser;
+- removing the secondary India time zone from the calendar view did not change it;
+- changing the account default time zone did not change it either (2026-11-12);
+- clicking the `India` control raises `TimeoutError` — it is not directly clickable.
+
+**What this means for use:** a `meeting-create` run produces a correct title, attendees, body and Teams link, but the time lands 2:30 late. Until the event time zone is fixed in the account, this skill must not be used for a real invitation without a human checking the time afterwards — and the check has to read the *stored* event (Outlook COM on Windows, or the calendar UI), never the composer, because the composer header shows the typed values, not the stored ones.
+
+The next step is the account setting, not more automation: Outlook → Settings → Calendar → Events and invitations → time zone for new events. The alternative, if it cannot be changed, is an explicit `timezone_shift` option applied to the typed time and verified against a read-back — never a silent compensation.
+
 ## The date field: solved, and how it was misread
 
 **Resolved 2026-11-12.** The `Start date` control is an ordinary `input[type=text]` holding an ISO value (`2026-11-12`), not read-only, and `fill("2026-11-20")` writes it; `Tab` commits it. Five earlier approaches had failed because **focus was never on the input**, not because the control was special: a probe that read the element attributes (`readonly: null`, `type: "text"`, `value_before: "2026-11-12"`) and then reported `{"fill": "2026-11-20", "after_tab": "2026-11-20"}` settled it in one run.
