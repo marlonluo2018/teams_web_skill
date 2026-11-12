@@ -21,9 +21,11 @@ session has expired.**
 2. When it has expired, the agent opens a window on the sign-in page and **you** approve it with
    your passkey — PIN, fingerprint or face. The agent never sees the credential. Then the agent
    does the work: title, attendees, date, times, body, the Teams switch, and the send.
-3. **A window opens for each run**, because headless cannot complete the corporate sign-in: a
-   headless launch with a valid stored session still lands on the login page and exits 3
-   (measured). That is why `serve` exists — one session, many commands, one boot.
+3. **A window opens for each run.** Headless cannot get in even with a valid stored session: it
+   clears the earlier sign-in steps and then stops at the IdP's passkey prompt, which headless cannot
+   satisfy — the service asks the same profile for a passkey when it is headless and lets it in
+   silently when it is not (measured 2026-11-12). That is why `serve` exists: one session, many
+   commands, one boot.
 
 **What that means in practice:** be reachable for the occasional sign-in, and expect a Chromium
 window on each run. It is not a scheduled job.

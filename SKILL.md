@@ -21,7 +21,7 @@ operations: ["serve", "calibrate"]
 Measured 2026-11-12, in this order:
 
 - **A headed launch with a valid stored session goes straight in** — `landed_without_help: true`, no prompt. The one-browser-per-command shape works; the earlier belief that every launch demanded a passkey was wrong, and came from reading a headless failure as an auth rule.
-- **A headless launch does not**, even with that same valid session: it stops at `login.microsoftonline.com` and exits 3. Headless cannot complete the corporate sign-in, so every run opens a window.
+- **A headless launch does not**, even with that same valid session. Re-measured 2026-11-12: it clears the earlier SSO steps and stops at the IdP's FIDO2 page — "Sign-in with Your Passkey ... use your PIN, fingerprint, or face" — which a headless browser cannot satisfy. So the same profile that enters silently in a window is asked for a passkey without one: the service treats headless as a different environment. Every run therefore opens a window.
 - **When the stored session has expired**, the headed run lands on the sign-in page and waits for the human: passkey, PIN, fingerprint or face. Only then is the agent blocked on a person.
 
 `serve` is therefore an optimisation, not a requirement: one session, many commands, one boot (~15 s each otherwise). Use it for a batch; a single `meeting-create` one-shot is fine.
