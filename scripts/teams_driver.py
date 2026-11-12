@@ -167,7 +167,15 @@ def open_context(playwright, headless: bool = False, offscreen: bool = False):
         "user_data_dir": str(path),
         "headless": headless,
         "viewport": {"width": 1500, "height": 950},
-        "args": ["--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble"],
+        "args": [
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--hide-crash-restore-bubble",
+            # Without an explicit profile directory Chromium can open its profile chooser
+            # window instead of the app, which no automation can click through - and which
+            # an offscreen run cannot even show to a human (measured 2026-11-12).
+            "--profile-directory=Default",
+        ],
     }
     if offscreen:
         options["args"] = list(options["args"]) + ["--window-position=-32000,-32000"]
@@ -1446,7 +1454,12 @@ def main() -> int:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         try:
             page.goto(app_url(), wait_until="domcontentloaded")
-            ready = wait_for_app(page, ready_timeout())
+            # Offscreen is only viable when nothing needs a click. Any prompt - Chromium's
+            # profile chooser or the Microsoft account tile - is unclickable off-screen, so
+            # probe briefly and hand over to a visible window instead of waiting out the
+            # full timeout on a page nobody can see (measured: it asks for a click even
+            # shortly after a successful sign-in).
+            ready = wait_for_app(page, 25 if offscreen else ready_timeout())
 
             # Offscreen parks the window outside the desktop, so if the stored session has
             # expired the passkey prompt appears where nobody can see it. Retry once with a
