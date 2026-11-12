@@ -1203,7 +1203,7 @@ def tz_probe(page, args: dict) -> dict:
 
     Two saves came back exactly +2:30 from what was typed (09:00 -> 11:30, 14:00
     -> 16:30), which is the gap between UTC+8 and UTC+5:30 - so the event is being
-    interpreted in India time. This records what the browser reports, what the
+    interpreted in the event's own zone. This records what the browser reports, what the
     composer Time zone control shows, and what options it offers.
     """
     report: dict = {}
@@ -1259,12 +1259,12 @@ def tz_probe(page, args: dict) -> dict:
     return {"ok": True, **report}
 
 def tz_set_probe(page, args: dict) -> dict:
-    """What does the composer timezone control open into?
+    """What does the composer's time-zone control open into?
 
-    The toolbar reads "More options More options IndiaIndia" and the composer stores
-    every typed time as India time (+2:30 from Beijing), which is why three saves
-    came back shifted. Changing the account default did not move it, so the switch
-    has to be flipped per event - this finds out how.
+    Diagnostic only, and normally unnecessary: a uniform shift in stored times is the
+    account calendar time zone, and that is fixed in the calendar settings. Kept for the
+    case where the zone has to be changed per event instead. The zone to look for is
+    supplied as TEAMS_SKILL_ZONE_NAME or --zone-name, because it is environment specific.
     """
     report: dict = {}
     page.goto(calendar_url(), wait_until="domcontentloaded")
@@ -1273,8 +1273,12 @@ def tz_set_probe(page, args: dict) -> dict:
     page.get_by_role("button", name=re.compile("new event", re.I)).first.click()
     page.wait_for_timeout(6000)
 
+    zone_name = str(args.get("zone_name") or os.environ.get("TEAMS_SKILL_ZONE_NAME", "")).strip()
+    if not zone_name:
+        return {"ok": False,
+                "error": "set TEAMS_SKILL_ZONE_NAME (or --zone-name) to the zone label to look for"}
     opener = None
-    for selector in ("[aria-label*='India']", "text=India"):
+    for selector in (f"[aria-label*='{zone_name}']", f"text={zone_name}"):
         try:
             loc = page.locator(selector)
             if loc.count() > 0:
@@ -1284,7 +1288,7 @@ def tz_set_probe(page, args: dict) -> dict:
         except Exception:
             continue
     if opener is None:
-        return {"ok": False, "error": "no India control found", **report}
+        return {"ok": False, "error": f"no control labelled {zone_name!r} found", **report}
 
     try:
         report["opener_label"] = (opener.get_attribute("aria-label") or "")[:60]
@@ -1383,7 +1387,7 @@ def _meeting_args(argv: list[str]) -> dict:
     while i < len(argv):
         flag = argv[i]
         takes_value = flag in ("--subject", "--start", "--end", "--attendee", "--body",
-                              "--body-file", "--target-date")
+                              "--body-file", "--target-date", "--zone-name")
         if takes_value and i + 1 < len(argv):
             value = argv[i + 1]
             if flag == "--attendee":

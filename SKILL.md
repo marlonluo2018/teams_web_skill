@@ -14,7 +14,7 @@ operations: ["serve", "calibrate"]
 
 # Microsoft 365 (web) — resident session
 
-Two paths are closed, which is why this exists. **The Graph API is not permitted** where this runs, so `isOnlineMeeting` is not available to mint a join link. **win32com cannot insert one either** — on this account `IsOnlineMeeting` stays False and `OnlineMeeting` is unavailable, so the desktop path can create a meeting but never a Teams link. What is left is the web UI: tick `Microsoft Teams meeting` in the composer and the service generates the link. This drives that UI in a real browser with the user own session — no Graph token, no app registration, no admin consent. Same shape as `slack_web_skill`, applied to Microsoft 365.
+**The Graph API is not permitted** where this runs. **win32com cannot insert a Teams link either** — on this account `IsOnlineMeeting` stays False and `OnlineMeeting` is unavailable, so the desktop path can create a meeting but never a link. What remains is the web UI: tick `Microsoft Teams meeting` in the composer and the service generates the link. This drives that UI in a real browser with the user own session — no Graph token, no app registration, no admin consent. Same shape as `slack_web_skill`, applied to Microsoft 365.
 
 ## Why a *resident* session, and not a browser per command
 
@@ -42,30 +42,14 @@ In `serve`, one JSON object per line, one reply per line:
 {"cmd":"quit"}
 ```
 
-## The time zone trap: solved (it cost four wrong saves)
+## Times follow the account calendar time zone
 
-**Resolved 2026-11-12.** While the account calendar time zone was India (UTC+5:30), every typed time was stored 2 h 30 min later:
+The composer interprets typed times in the account's calendar time zone, not the machine's. A uniform
+shift — every time coming back the same amount late — is that setting, not a bug in the typing: fix the
+time zone in the calendar settings and re-test before touching code.
 
-| Typed | Composer header showed | Stored (read back via Outlook COM) |
-|---|---|---|
-| 2026-11-24 09:00–10:00 | 09:00–10:00 | **11:30–12:30** |
-| 2026-11-20 14:00–15:00 | 14:00–15:00 | **16:30–17:30** |
-
-+2:30 is the gap between UTC+8 (Beijing) and UTC+5:30 (India), and the composer toolbar carries a control whose text is `India`. So the new-event time zone is India, and every typed time is interpreted there. Established so far:
-
-- the browser reports the expected zone (checked with `Intl`, and again with `timezone_id` forced) — not the browser;
-- removing the secondary India time zone from the calendar view did not change it;
-- changing the account default time zone did not change it either (2026-11-12);
-- clicking the `India` control raises `TimeoutError` — it is not directly clickable.
-
-**What this means for use:** a `meeting-create` run produces a correct title, attendees, body and Teams link, but the time lands 2:30 late. Until the event time zone is fixed in the account, this skill must not be used for a real invitation without a human checking the time afterwards — and the check has to read the *stored* event (Outlook COM on Windows, or the calendar UI), never the composer, because the composer header shows the typed values, not the stored ones.
-
-**The fix was the account calendar time zone**, set to China in Outlook web settings (Settings → Calendar). After that the same probe stored `09:00-10:00` exactly as typed, read back through Outlook COM. No code change was needed: the driver types local wall-clock times and the account tells Outlook which zone they mean.
-
-Two habits this leaves behind:
-
-- **Verify against the stored event, never the composer.** The composer header mirrors what was typed even when the stored value differs, so a read-back of the composer proves nothing. On Windows, `outlook_skill.py list-calendar` is the cheap independent check.
-- **A uniform offset is a timezone, not a bug in the typing.** Two saves drifting by the same 2:30 pointed at the zone, not at `fill()`. Measuring the same operation twice and comparing was what identified it.
+Verify times by reading the **stored event** (`list-calendar`), never the composer header: the header
+mirrors what was typed even when the stored value differs, so reading it back proves nothing.
 
 ## The date field: solved, and how it was misread
 

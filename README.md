@@ -16,13 +16,12 @@ join link is minted by the service at creation — nothing pasted in, nothing in
 **The agent runs everything except one thing: the passkey tap that starts a session.**
 
 1. The agent opens a window on the sign-in page. **You** approve it with your passkey — PIN,
-   fingerprint or face. The corporate identity provider requires that for every new browser session,
-   and no stored cookie skips it. The agent never sees the credential.
+   fingerprint or face. Every new browser session asks for it, even though a persistent auth cookie
+   exists (measured 2026-11-12). The agent never sees the credential.
 2. In that one session the agent does the work: title, attendees, date, times, body, the Teams
    switch, and the send.
-3. The next session needs another tap. Nothing survives a closed browser except being signed in —
-   which is why the browser is kept open for the whole piece of work instead of relaunching per
-   command.
+3. The next session needs another tap. The browser therefore stays open for the whole piece of work
+   instead of being relaunched per command.
 
 **What that means in practice:** this is attended. It is not a scheduled job and not a background
 service — plan invitations for a time when you are at the machine.
