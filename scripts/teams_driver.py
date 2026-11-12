@@ -2,7 +2,7 @@
 """teams_web_skill driver - Microsoft 365 web automation over a resident session.
 
 Why resident, and not one browser per command: measured on this tenant
-2026-11-12, every new browser session must pass an IBM w3id FIDO2 passkey, and
+2026-11-12, every new browser session must pass a FIDO2 passkey at the corporate IdP, and
 the persisted ESTSAUTHPERSISTENT cookie (89 days) does not skip it - a fresh
 launch lands on "Pick an account" and then on "Sign-in with Your Passkey".
 So the browser stays open for the whole working session, the human taps the
@@ -40,7 +40,7 @@ PORTABLE_DIR = ".state"
 # calendar read as "not ready". Reject the sign-in hosts instead; anything else
 # with real text on it is the app.
 LOGIN_HOSTS = ("login.microsoftonline.com", "login.microsoft.com",
-               "login.live.com", "login.w3.ibm.com")
+               "login.live.com", "login.w3.ibm.com")  # the enterprise IdP entry seen in practice
 # Text that only appears during sign-in, so it vetoes the app verdict.
 LOGIN_HINTS = ("pick an account", "sign in to your account", "enter password",
                "use another account", "sign-in with your passkey")
@@ -1372,7 +1372,7 @@ USAGE = """teams_web_skill - resident M365 web automation
         --start "2026-11-13 14:00" --end "2026-11-13 15:00" --attendee a@b.c
         [--body TEXT] [--no-teams] [--dry-run]
 
-A new browser session needs an IBM w3id passkey tap, so the browser stays open:
+A new browser session needs a passkey tap at the corporate IdP, so the browser stays open:
 start one, keep it, and send commands ({"cmd":"status"}, {"cmd":"calibrate"},
 {"cmd":"quit"}) on stdin.
 """

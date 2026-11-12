@@ -4,7 +4,7 @@
     py -3 scripts/install.py          (Windows)
     python3 scripts/install.py        (macOS / Linux)
 
-Idempotent. It never signs in: a new session needs an IBM w3id passkey tap,
+Idempotent. It never signs in: a new session needs a passkey tap at the corporate identity provider,
 which only the human at the window can do.
 """
 

@@ -19,7 +19,7 @@ This drives Microsoft 365 in a real browser with the user own session. No Graph 
 
 ## Why a *resident* session, and not a browser per command
 
-Measured on this tenant 2026-11-12: **every new browser session must pass an IBM w3id FIDO2 passkey.** A persisted `ESTSAUTHPERSISTENT` cookie exists (89 days) but does not skip it — a fresh launch lands on "Pick an account" and then on "Sign-in with Your Passkey".
+Measured 2026-11-12: **every new browser session must pass a FIDO2 passkey at the corporate identity provider.** A persisted `ESTSAUTHPERSISTENT` cookie exists (89 days) but does not skip it — a fresh launch lands on "Pick an account" and then on a passkey prompt.
 
 Consequences, both of which shape everything below:
 
@@ -54,7 +54,7 @@ In `serve`, one JSON object per line, one reply per line:
 
 +2:30 is the gap between UTC+8 (Beijing) and UTC+5:30 (India), and the composer toolbar carries a control whose text is `India`. So the new-event time zone is India, and every typed time is interpreted there. Established so far:
 
-- the browser reports `Asia/Shanghai` (checked with `Intl`, and again with `timezone_id` forced) — not the browser;
+- the browser reports the expected zone (checked with `Intl`, and again with `timezone_id` forced) — not the browser;
 - removing the secondary India time zone from the calendar view did not change it;
 - changing the account default time zone did not change it either (2026-11-12);
 - clicking the `India` control raises `TimeoutError` — it is not directly clickable.
