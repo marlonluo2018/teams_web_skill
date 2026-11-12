@@ -39,8 +39,22 @@ PORTABLE_DIR = ".state"
 # teams.cloud.microsoft - both absent from the list I had written, so a rendered
 # calendar read as "not ready". Reject the sign-in hosts instead; anything else
 # with real text on it is the app.
-LOGIN_HOSTS = ("login.microsoftonline.com", "login.microsoft.com",
-               "login.live.com", "login.w3.ibm.com")  # the enterprise IdP entry seen in practice
+LOGIN_HOSTS_DEFAULT = ("login.microsoftonline.com", "login.microsoft.com", "login.live.com")
+
+
+def login_hosts() -> tuple[str, ...]:
+    """Sign-in hosts to reject: the default set plus any corporate IdP entry.
+
+    A company's own SSO host is environment specific, so it is configuration rather than a
+    constant: TEAMS_SKILL_IDP_HOSTS (or "idp_hosts" in config.json), comma separated. Without
+    it, an IdP page is still caught by the sign-in text below, which is interned for exactly
+    that reason — but a site that renders no such text would be mistaken for the app."""
+    extra = setting("TEAMS_SKILL_IDP_HOSTS", "idp_hosts", "")
+    if isinstance(extra, (list, tuple)):
+        hosts = [str(h).strip() for h in extra if str(h).strip()]
+    else:
+        hosts = [h.strip() for h in str(extra).split(",") if h.strip()]
+    return LOGIN_HOSTS_DEFAULT + tuple(hosts)
 # Text that only appears during sign-in, so it vetoes the app verdict.
 LOGIN_HINTS = ("pick an account", "sign in to your account", "enter password",
                "use another account", "sign-in with your passkey")
@@ -163,7 +177,7 @@ def app_state(page) -> tuple[bool, str]:
     except Exception:
         body = ""
     low = body.lower()
-    if any(host.endswith(h) for h in LOGIN_HOSTS):
+    if any(host.endswith(h) for h in login_hosts()):
         return False, host or "no host"
     if any(hint in low for hint in LOGIN_HINTS):
         return False, "sign-in screen"

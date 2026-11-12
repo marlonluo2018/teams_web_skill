@@ -25,7 +25,7 @@ Consequences, both of which shape everything below:
 - **The browser stays open** for the whole working session; commands arrive as JSON lines. A one-browser-per-command design (what the Slack skill does) cannot work here.
 - **The passkey is the human step.** The agent never types credentials, and cannot: the prompt wants a PIN, fingerprint or face.
 
-Headless is allowed *inside* an already-authenticated resident session, but it cannot start one — measured again 2026-11-12: `serve --headless` against a stored profile stopped at `login.microsoftonline.com` and exited 3 after the full timeout. Headed runs still need the passkey tap each session; the SSO redirect reaches `login.w3.ibm.com` and waits there for the human.
+Headless is allowed *inside* an already-authenticated resident session, but it cannot start one — measured again 2026-11-12: `serve --headless` against a stored profile stopped at `login.microsoftonline.com` and exited 3 after the full timeout. Headed runs still need the passkey tap each session: the SSO redirect reaches the corporate IdP entry and waits there for the human. List that host under `idp_hosts` so the driver recognises it as a sign-in page.
 
 ## Commands
 

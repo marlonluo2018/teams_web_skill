@@ -72,6 +72,7 @@ with **env var > config file > default**:
 | `calendar_url` | `TEAMS_SKILL_CALENDAR_URL` | the Outlook calendar |
 | `browser_channel` | `TEAMS_SKILL_BROWSER_CHANNEL` | bundled Chromium; set `msedge`/`chrome` if the passkey prompt does not appear |
 | `ready_timeout` | `TEAMS_SKILL_READY_TIMEOUT` | 300 s to reach the app after sign-in |
+| `idp_hosts` | `TEAMS_SKILL_IDP_HOSTS` | empty — add your corporate sign-in host(s), comma separated, so its page is recognised as a sign-in page rather than as the app |
 | `profile` | `TEAMS_SKILL_PROFILE` | the browser profile under the per-user data directory |
 
 The browser profile holds the session and lives outside the checkout: `%LOCALAPPDATA%\teams-web-skill\`

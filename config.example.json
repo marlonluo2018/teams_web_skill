@@ -3,5 +3,6 @@
   "calendar_url": "https://outlook.office.com/calendar/",
   "browser_channel": null,
   "profile": null,
-  "ready_timeout": 300
+  "ready_timeout": 300,
+  "idp_hosts": []
 }
