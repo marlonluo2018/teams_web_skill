@@ -16,6 +16,16 @@ operations: ["serve", "calibrate"]
 
 **The Graph API is not permitted** where this runs. **win32com cannot insert a Teams link either** — on this account `IsOnlineMeeting` stays False and `OnlineMeeting` is unavailable, so the desktop path can create a meeting but never a link. What remains is the web UI: tick `Microsoft Teams meeting` in the composer and the service generates the link. This drives that UI in a real browser with the user own session — no Graph token, no app registration, no admin consent. Same shape as `slack_web_skill`, applied to Microsoft 365.
 
+## Before blaming headless, check the service
+
+Two failures look alike and are not:
+
+| Symptom | Meaning |
+|---|---|
+| `page.goto` times out and the page never loads | network or Microsoft availability — nothing to do with the browser mode |
+| the page loads and stops at the passkey prompt | the real headless limit |
+
+Seen both: on 2026-11-12 headless reached the IdP passkey page (a genuine limit); on 2026-11-13 the same command died in `page.goto` after 30 s because the service was down. Check reachability of `outlook.office.com` / `login.microsoftonline.com` before concluding anything about browser modes.
 ## Sessions: one launch per run is fine, headless is not
 
 Measured 2026-11-12, in this order:
