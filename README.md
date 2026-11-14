@@ -35,12 +35,34 @@ window on each run. It is not a scheduled job.
 
 | Command | Purpose |
 |---|---|
-| `meeting-create` | fill the composer and send the invitation (title, attendees, date, times, body, Teams link on/off) |
-| `serve` | keep one session open and take JSON commands on stdin — for a batch, to boot once |
+| `meeting-create` | one-shot: fill the composer and send (kept for compatibility) |
+| `serve` | **agent-native, step-wise**: one browser, many JSON commands — load, inspect, then decide |
 | `calibrate` | re-discover the composer controls after a Microsoft UI change |
 
 `meeting-create --dry-run` fills everything and discards it without sending: use it to check a new
 environment, or after any UI change.
+
+### Agent integration (step-wise, correct way)
+
+One-shot `meeting-create` guesses all 7 steps and must use `--offscreen` + 25s timeout to hide the window — it leaves the vertical bar and cannot be inspected mid-flight. The agent integration is `serve`:
+
+```json
+{"cmd":"status"}                                         // app? else auto-handle sign-in
+{"cmd":"open_composer"}                                   // New event → screenshot serve-open.png
+{"cmd":"fill_subject","value":"Sync"}                     // or fill_body / body_file
+{"cmd":"add_attendee","value":"a@b.c"}                    // repeat for many
+{"cmd":"set_datetime","start":"2026-11-20 14:00","end":"2026-11-20 14:30"}
+{"cmd":"teams_on"}                                        // or teams_off
+{"cmd":"readback"}                                        // subject/time/teams_on/body_head + screenshot
+{"cmd":"save"}                                            // or discard
+{"cmd":"screenshot","name":"check1"}                      // ad-hoc inspection
+```
+
+Flow (enforced): `outlook_com_skill` cannot mint a Teams link, so **creation + Teams link → `teams_web_skill serve`; cancel/delete → `outlook_com_skill`**. Each step returns `ok` + `screenshot`; the agent reads the screenshot/readback before the next step. Only the OS WebAuthn prompt needs a visible window.
+
+Auto-handled in `wait_for_app` / `status`:
+- stuck at **Pick an account** (case B) → click `luomn@cn.ibm.com` tile (`_try_pick_account`) — offscreen-capable
+- stuck at **verification choice** → click DOM `Sign-in with Your Passkey` (`_try_trigger_passkey`) — offscreen-capable; the OS PIN/fingerprint that follows still needs the human
 
 ## Install
 
@@ -84,6 +106,14 @@ with **env var > config file > default**:
 The browser profile holds the session and lives outside the checkout: `%LOCALAPPDATA%\teams-web-skill\`
 on Windows, `~/Library/Application Support/teams-web-skill/` on macOS, `$XDG_DATA_HOME/teams-web-skill/`
 on Linux. A `.state/` directory beside `scripts/` switches to portable mode.
+
+## How it sees the page — text, not vision
+
+**Primary: DOM text**, not screenshots. Selectors are `role` + `aria-label` + `placeholder` + `innerText` (`app_state`, `controls`, `readback`); decisions (app vs sign-in, account tile, passkey entry, subject/time readback) come from `page.inner_text("body")` and `get_by_role`. This is why `Pick an account` and `Sign-in with Your Passkey` can be auto-clicked offscreen — they are DOM buttons.
+
+**Screenshots are audit, not control**: every `serve` step writes `serve-*.png` (`%LOCALAPPDATA%\teams-web-skill\`); `meeting-create` writes `meeting-create.png`/`meeting-sent.png`. The agent and the human use them to verify what landed (the composer header alone lies — it mirrors typed text even when stored time differs). No image-recognition click is used.
+
+**No multimodal LLM required**: entirely DOM text (`role/aria-label/placeholder/innerText` + `page.evaluate` geometry) — a text-only model (e.g. `Muse Spark`) can drive `serve` step-wise. Screenshots are for human/audit, not for vision-based clicking; multimodal is optional for cross-checking layout, not required.
 
 ## Limits worth knowing
 

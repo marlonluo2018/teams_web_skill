@@ -200,6 +200,75 @@ def app_state(page) -> tuple[bool, str]:
     return (len(body) > 60 and bool(host)), "app"
 
 
+def _try_pick_account(page) -> bool:
+    """Auto-click the Microsoft 'Pick an account' tile (case B).
+
+    After a persisted profile the session is valid and passkey is NOT needed,
+    but M365 still shows a one-click account chooser (e.g. luomn@cn.ibm.com).
+    This is a normal DOM click, not WebAuthn, so it can be automated even
+    offscreen. Returns True if a click was attempted.
+    """
+    # Prefer the known user address if present anywhere on the page
+    candidates = []
+    for addr in ("luomn@cn.ibm.com",):
+        try:
+            loc = page.get_by_text(addr, exact=False)
+            if loc.count() > 0:
+                candidates.append(loc.first)
+        except Exception:
+            pass
+    # Generic fallback: any tile/button that contains an @ address
+    if not candidates:
+        try:
+            loc = page.locator("[data-test-id*='account'], [role='button']:has-text('@'), div[role='button']:has-text('@')")
+            if loc.count() > 0:
+                candidates.append(loc.first)
+            else:
+                # last resort: any element with email-like text
+                loc2 = page.locator("text=/@.*ibm\\.com/i")
+                if loc2.count() > 0:
+                    candidates.append(loc2.first)
+        except Exception:
+            pass
+    for el in candidates:
+        try:
+            el.click(timeout=5000)
+            print("auto-picked account tile", file=sys.stderr, flush=True)
+            page.wait_for_timeout(3000)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _try_trigger_passkey(page) -> bool:
+    """Click the DOM 'Sign-in with Your Passkey' button (pre-WebAuthn step).
+
+    The page offers SSO / phone code / passkey. Passkey is one DOM click;
+    the OS WebAuthn prompt that follows still needs the human PIN/fingerprint.
+    This click is automatable and saves the user one manual step.
+    """
+    try:
+        # Exact label varies: "Sign in with your passkey", "Sign-in with Your Passkey", "使用通行密钥登录"
+        for pat in (re.compile(r"sign.?in with.*passkey", re.I), re.compile(r"passkey", re.I), re.compile(r"通行密钥", re.I)):
+            loc = page.get_by_role("button", name=pat)
+            if loc.count() > 0:
+                loc.first.click(timeout=5000)
+                print("auto-clicked passkey button", file=sys.stderr, flush=True)
+                page.wait_for_timeout(2500)
+                return True
+        # Text fallback: clickable div/span with passkey text
+        loc = page.get_by_text(re.compile(r"sign.?in with.*passkey", re.I))
+        if loc.count() > 0:
+            loc.first.click(timeout=5000)
+            print("auto-clicked passkey text", file=sys.stderr, flush=True)
+            page.wait_for_timeout(2500)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def wait_for_app(page, timeout: int) -> bool:
     """Poll until the app renders, narrating on stderr so the human knows when to tap."""
     deadline = time.time() + timeout
@@ -207,6 +276,27 @@ def wait_for_app(page, timeout: int) -> bool:
     last = 0.0
     while time.time() < deadline:
         rendered, detail = app_state(page)
+        if not rendered and "pick an account" in (detail.lower() + " " + (page.url or "").lower()):
+            # Detail alone may be "login.microsoftonline.com"; check body too
+            try:
+                body_low = " ".join(page.inner_text("body").split()).lower()[:800]
+            except Exception:
+                body_low = ""
+            if "pick an account" in body_low or "pick an account" in detail.lower():
+                _try_pick_account(page)
+            if "passkey" in body_low:
+                _try_trigger_passkey(page)
+        else:
+            # Also probe body directly even when host check didn't trigger
+            try:
+                body_low = " ".join(page.inner_text("body").split()).lower()[:800]
+                if "pick an account" in body_low:
+                    _try_pick_account(page)
+                # IdP page with multiple verification options: auto-click passkey entry
+                if "passkey" in body_low:
+                    _try_trigger_passkey(page)
+            except Exception:
+                pass
         steady = steady + 1 if rendered else 0
         if time.time() - last > 10:
             last = time.time()
@@ -1365,8 +1455,209 @@ def tz_set_probe(page, args: dict) -> dict:
         pass
     return {"ok": True, **report}
 
+def _serve_screenshot(page, name: str) -> str:
+    """Screenshot helper for serve steps — returns path or empty."""
+    path = skill_home() / f"serve-{name}.png"
+    try:
+        page.screenshot(path=str(path))
+        return str(path)
+    except Exception:
+        return ""
+
+def _serve_open_composer(page) -> dict:
+    page.goto(calendar_url(), wait_until="domcontentloaded")
+    if not wait_for_app(page, ready_timeout()):
+        return {"ok": False, "error": "calendar did not render", "screenshot": _serve_screenshot(page, "open-fail")}
+    btn = page.get_by_role("button", name=re.compile("new event", re.I))
+    if btn.count() == 0:
+        return {"ok": False, "error": "no New event button", "screenshot": _serve_screenshot(page, "no-new-event")}
+    btn.first.click()
+    page.wait_for_timeout(6000)
+    title = page.locator("input[placeholder=\"Add title\"]")
+    return {"ok": title.count() > 0, "composer_open": title.count() > 0, "screenshot": _serve_screenshot(page, "open")}
+
+def _serve_fill_subject(page, value: str) -> dict:
+    try:
+        page.locator("input[placeholder=\"Add title\"]").first.fill(value or "")
+        page.wait_for_timeout(600)
+        return {"ok": True, "screenshot": _serve_screenshot(page, "subject")}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__, "screenshot": _serve_screenshot(page, "subject-fail")}
+
+def _serve_fill_body(page, value: str, body_file: str = "") -> dict:
+    body = value or ""
+    if body_file:
+        try:
+            body = Path(str(body_file)).read_text(encoding="utf-8")
+        except OSError as exc:
+            return {"ok": False, "error": f"body file: {exc}"}
+    if not body.strip():
+        return {"ok": True, "empty": True}
+    try:
+        editor = page.get_by_role("textbox", name="Event body")
+        if editor.count() == 0:
+            editor = page.locator("[contenteditable=true][aria-label=\"Event body\"]")
+        editor.first.click()
+        editor.first.type(body.strip(), delay=15)
+        page.wait_for_timeout(800)
+        return {"ok": True, "screenshot": _serve_screenshot(page, "body")}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__, "screenshot": _serve_screenshot(page, "body-fail")}
+
+def _serve_add_attendee(page, address: str) -> dict:
+    try:
+        box = page.locator("[contenteditable=true][aria-label=\"Invite required attendees\"]").first
+        box.click()
+        box.type(address, delay=40)
+        page.wait_for_timeout(2500)
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(1200)
+        return {"ok": True, "attendee": address, "screenshot": _serve_screenshot(page, "attendee")}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__, "screenshot": _serve_screenshot(page, "attendee-fail")}
+
+def _serve_set_datetime(page, start: str, end: str) -> dict:
+    """Set Start date + Start time + End time (start/end = 'YYYY-MM-DD HH:MM')."""
+    out: dict = {}
+    try:
+        clock = page.get_by_role("button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}"))
+        if clock.count() > 0:
+            clock.first.click()
+            page.wait_for_timeout(3000)
+    except Exception:
+        pass
+    if start:
+        date_target = start.split()[0]
+        try:
+            field = page.get_by_role("combobox", name="Start date")
+            if field.count() > 0:
+                field.first.fill(date_target)
+                page.wait_for_timeout(800)
+                page.keyboard.press("Tab")
+                page.wait_for_timeout(1200)
+                out["date"] = field.first.evaluate("e => e.value")
+        except Exception as exc:
+            out["date_error"] = type(exc).__name__
+        try:
+            field = page.get_by_role("combobox", name="Start time")
+            if field.count() > 0:
+                field.first.fill(start.split()[-1])
+                page.wait_for_timeout(400)
+                page.keyboard.press("Tab")
+                page.wait_for_timeout(900)
+                out["start_time"] = field.first.evaluate("e => e.value")
+        except Exception as exc:
+            out["start_error"] = type(exc).__name__
+    if end:
+        try:
+            field = page.get_by_role("combobox", name="End time")
+            if field.count() > 0:
+                field.first.fill(end.split()[-1])
+                page.wait_for_timeout(400)
+                page.keyboard.press("Tab")
+                page.wait_for_timeout(900)
+                out["end_time"] = field.first.evaluate("e => e.value")
+        except Exception as exc:
+            out["end_error"] = type(exc).__name__
+    try:
+        page.locator("input[placeholder=\"Add title\"]").first.click()
+        page.wait_for_timeout(800)
+    except Exception:
+        pass
+    out["screenshot"] = _serve_screenshot(page, "datetime")
+    out["ok"] = True
+    return out
+
+def _serve_teams(page, on: bool = True) -> dict:
+    cur = _switch_on(page)
+    if on and cur is True:
+        return {"ok": True, "teams_on": True}
+    if not on and cur is False:
+        return {"ok": True, "teams_on": False}
+    for attempt in ("input", "role", "label"):
+        try:
+            if attempt == "input":
+                page.locator("input[role=switch][aria-label=\"Microsoft Teams meeting\"]").first.click(force=True)
+            elif attempt == "role":
+                page.get_by_role("switch", name=re.compile("Microsoft Teams meeting", re.I)).first.click(force=True)
+            else:
+                page.get_by_text("Microsoft Teams meeting", exact=False).first.click()
+            page.wait_for_timeout(1500)
+        except Exception:
+            continue
+        if _switch_on(page) is True:
+            break
+    return {"ok": True, "teams_on": _switch_on(page), "screenshot": _serve_screenshot(page, "teams")}
+
+def _serve_readback(page) -> dict:
+    rb: dict = {"teams_on": _switch_on(page)}
+    try:
+        rb["subject"] = page.locator("input[placeholder=\"Add title\"]").first.input_value()
+    except Exception:
+        rb["subject"] = ""
+    try:
+        rb["time"] = " ".join(page.get_by_role("button", name=re.compile(r"[0-9]{1,2}:[0-9]{2}")).first.inner_text().split())
+    except Exception:
+        rb["time"] = ""
+    try:
+        body = page.get_by_role("textbox", name="Event body").first.inner_text()
+        rb["body_head"] = " ".join((body or "").split())[:120]
+    except Exception:
+        rb["body_head"] = ""
+    try:
+        txt = " ".join(page.inner_text("body").split())
+        rb["body_full"] = txt[:500]
+    except Exception:
+        pass
+    rb["screenshot"] = _serve_screenshot(page, "readback")
+    rb["url"] = (page.url or "")[:120]
+    return {"ok": True, **rb}
+
+def _serve_save(page) -> dict:
+    save = page.get_by_role("button", name=re.compile(r"^(Save|Send)$", re.I))
+    if save.count() == 0:
+        _discard(page)
+        return {"ok": False, "error": "no Save/Send button", "screenshot": _serve_screenshot(page, "no-save")}
+    label = " ".join((save.first.inner_text() or "").split())
+    save.first.click()
+    title_input = page.locator("input[placeholder=\"Add title\"]")
+    deadline = time.time() + 120
+    dismissed = 0
+    first_seen = None
+    while time.time() < deadline:
+        if title_input.count() == 0:
+            break
+        dialog = page.get_by_text("creating a Teams meeting", exact=False)
+        try:
+            present = dialog.count() > 0
+        except Exception:
+            present = False
+        if present:
+            if first_seen is None:
+                first_seen = time.time()
+            elif time.time() - first_seen > 15 and dismissed < 3:
+                try:
+                    ok = page.get_by_role("button", name=re.compile("^ok$", re.I))
+                    if ok.count() > 0:
+                        ok.first.click()
+                        dismissed += 1
+                        first_seen = None
+                        page.wait_for_timeout(4000)
+                        continue
+                except Exception:
+                    pass
+        page.wait_for_timeout(3000)
+    composer_gone = page.locator("input[placeholder=\"Add title\"]").count() == 0
+    return {"ok": composer_gone, "sent": composer_gone, "clicked": label, "composer_closed": composer_gone, "screenshot": _serve_screenshot(page, "sent")}
+
+def _serve_discard(page) -> dict:
+    _discard(page)
+    page.wait_for_timeout(1000)
+    gone = page.locator("input[placeholder=\"Add title\"]").count() == 0
+    return {"ok": gone, "discarded": gone, "screenshot": _serve_screenshot(page, "discard")}
+
 def serve(page) -> int:
-    """One browser, many commands: JSON in, JSON out, in order."""
+    """One browser, many commands: JSON in, JSON out, in order. Step-wise for agent integration."""
     emit({"action": "serve", "ready": True, **state_report()})
     for line in sys.stdin:
         line = line.strip()
@@ -1384,11 +1675,58 @@ def serve(page) -> int:
                 return 0
             if name == "status":
                 rendered, detail = app_state(page)
+                # opportunistic auto-pick/trigger without blocking
+                try:
+                    body_low = " ".join(page.inner_text("body").split()).lower()[:800]
+                    if "pick an account" in body_low:
+                        _try_pick_account(page)
+                    if "passkey" in body_low:
+                        _try_trigger_passkey(page)
+                except Exception:
+                    pass
+                rendered, detail = app_state(page)
                 emit({"action": "status", "app": rendered, "detail": detail,
                       "url": (page.url or "")[:90], **state_report()})
                 continue
             if name == "calibrate":
                 emit({"action": "calibrate", **calibrate(page)})
+                continue
+            if name == "open_composer":
+                emit({"action": "open_composer", **_serve_open_composer(page)})
+                continue
+            if name == "fill_subject":
+                emit({"action": "fill_subject", **_serve_fill_subject(page, cmd.get("value","") or cmd.get("subject",""))})
+                continue
+            if name == "fill_body":
+                emit({"action": "fill_body", **_serve_fill_body(page, cmd.get("value","") or cmd.get("body",""), cmd.get("body_file",""))})
+                continue
+            if name == "add_attendee":
+                emit({"action": "add_attendee", **_serve_add_attendee(page, cmd.get("value","") or cmd.get("attendee",""))})
+                continue
+            if name == "set_datetime":
+                emit({"action": "set_datetime", **_serve_set_datetime(page, cmd.get("start",""), cmd.get("end",""))})
+                continue
+            if name == "teams_on":
+                emit({"action": "teams_on", **_serve_teams(page, True)})
+                continue
+            if name == "teams_off":
+                emit({"action": "teams_off", **_serve_teams(page, False)})
+                continue
+            if name == "readback":
+                emit({"action": "readback", **_serve_readback(page)})
+                continue
+            if name == "save":
+                emit({"action": "save", **_serve_save(page)})
+                continue
+            if name == "discard":
+                emit({"action": "discard", **_serve_discard(page)})
+                continue
+            if name == "screenshot":
+                emit({"action": "screenshot", "path": _serve_screenshot(page, cmd.get("name","manual"))})
+                continue
+            # legacy one-shot kept for compatibility
+            if name == "meeting-create":
+                emit({"action": "meeting-create", **meeting_create(page, cmd)})
                 continue
             emit({"action": name or "unknown", "error": "unknown command"})
         except (SystemExit, PWTimeout) as exc:
